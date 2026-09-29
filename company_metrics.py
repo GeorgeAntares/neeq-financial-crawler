@@ -4,6 +4,11 @@ Company-level financial metrics (one row per stock_code + year).
 Reads first statement block only (consolidated). A later ``项目`` header is
 treated as the parent-company / extra table and ignored. Missing line items
 stay NaN; they are not filled from a later block.
+
+Statement preprocessing lives here as quality flags and valid-ratio rules:
+gross margin only from 营业成本, ROE/multiplier frozen on non-positive equity,
+BS articulation, inventory 0 vs missing, DSO/DIO/DPO caps, accruals.
+Revenue >= 100k is sample screening (footnote IDs), not statement cleaning.
 """
 from __future__ import annotations
 
@@ -23,7 +28,11 @@ OUTPUT_DIR_DEFAULT = os.path.join(ROOT, "output", "analysis")
 
 METRICS_NAME = "company_metrics.csv"
 COVERAGE_NAME = "company_metrics_coverage.csv"
+QUALITY_NAME = "company_metrics_quality.csv"
 WINSOR_LIMITS = (0.01, 0.99)
+DAYS_PER_YEAR = 365.0
+DAYS_ANOMALY = 730.0
+BS_REL_TOL = 0.01
 
 ID_COLS = ["stock_code", "company_name", "year"]
 
@@ -31,6 +40,7 @@ AMOUNT_COLS = [
     "revenue",
     "revenue_prior",
     "cogs",
+    "total_operating_cost",
     "net_profit",
     "net_profit_prior",
     "total_assets",
@@ -42,6 +52,7 @@ AMOUNT_COLS = [
     "equity_begin",
     "accounts_receivable",
     "inventory",
+    "accounts_payable",
     "ocf",
     "ocf_prior",
 ]
@@ -57,9 +68,30 @@ RATIO_COLS = [
     "ar_to_revenue",
     "inventory_to_revenue",
     "ocf_to_revenue",
+    "accruals_to_revenue",
+    "dso",
+    "dio",
+    "dpo",
+    "operating_cycle",
+    "ccc",
     "revenue_yoy",
     "net_profit_yoy",
     "ocf_yoy",
+]
+
+FLAG_COLS = [
+    "gm_valid",
+    "equity_negative",
+    "roe_valid",
+    "bs_articulation_ok",
+    "bs_gap",
+    "bs_rel_gap",
+    "np_truncated",
+    "ocf_missing_kind",
+    "inventory_status",
+    "dso_anomalous",
+    "dio_anomalous",
+    "dpo_anomalous",
 ]
 
 
@@ -215,6 +247,22 @@ def score_inventory(item):
     return 1 if str(item).strip() == "存货" else 0
 
 
+def score_accounts_payable(item):
+    return 1 if str(item).strip() == "应付账款" else 0
+
+
+def statement_meta(long_df):
+    """Row counts of the first block, one row per company-year."""
+    empty = pd.DataFrame(columns=["stock_code", "year", "n_rows"])
+    if long_df is None or long_df.empty:
+        return empty
+    return (
+        long_df.groupby(["stock_code", "year"], as_index=False)
+        .size()
+        .rename(columns={"size": "n_rows"})
+    )
+
+
 def score_ocf(item):
     text = str(item).strip()
     if "投资" in text or "筹资" in text:
@@ -280,9 +328,20 @@ def _merge_pick(base, picked, value_name, item_name=None):
     return merged
 
 
+def _numeric(value, index=None):
+    if value is None:
+        if index is None:
+            return np.nan
+        return pd.Series(np.nan, index=index)
+    return pd.to_numeric(value, errors="coerce")
+
+
 def safe_div(numerator, denominator):
-    num = pd.to_numeric(numerator, errors="coerce")
-    den = pd.to_numeric(denominator, errors="coerce")
+    index = getattr(numerator, "index", None)
+    if index is None:
+        index = getattr(denominator, "index", None)
+    num = _numeric(numerator, index)
+    den = _numeric(denominator, index)
     out = num / den
     out = out.mask(den == 0)
     return out
@@ -291,6 +350,8 @@ def safe_div(numerator, denominator):
 def yoy(current, prior):
     """(current - prior) / |prior|; undefined when prior is 0 or missing."""
     cur = pd.to_numeric(current, errors="coerce")
+    if prior is None:
+        return pd.Series(np.nan, index=getattr(cur, "index", None))
     old = pd.to_numeric(prior, errors="coerce")
     out = (cur - old) / old.abs()
     out = out.mask(old == 0)
@@ -308,14 +369,121 @@ def winsorize_series(series, limits=WINSOR_LIMITS):
 
 def average_level(end_col, begin_col):
     end = pd.to_numeric(end_col, errors="coerce")
+    if begin_col is None:
+        return end
     begin = pd.to_numeric(begin_col, errors="coerce")
     both = end.notna() & begin.notna()
     avg = (end + begin) / 2.0
     return avg.where(both, end)
 
 
+def _merge_counts(wide, counts, name):
+    keys = ["stock_code", "year"]
+    if counts is None or counts.empty:
+        wide[name] = 0
+        return wide
+    right = counts.rename(columns={"n_rows": name})
+    merged = wide.merge(right, on=keys, how="left")
+    merged[name] = merged[name].fillna(0).astype(int)
+    return merged
+
+
+def days_anomalous(series, cap=DAYS_ANOMALY):
+    values = pd.to_numeric(series, errors="coerce")
+    return values.notna() & ((values > cap) | (values < 0))
+
+
+def add_ratios_and_flags(wide):
+    """Ratios plus statement-quality flags. Mutates a copy."""
+    frame = wide.copy()
+
+    cost_from_cogs = frame["cogs"].notna() if "cogs" in frame.columns else pd.Series(False, index=frame.index)
+    if "cogs" not in frame.columns:
+        frame["cogs"] = np.nan
+    frame["cost_source"] = pd.Series(pd.NA, index=frame.index, dtype="object")
+    frame.loc[cost_from_cogs, "cost_source"] = "营业成本"
+    total_cost = frame["total_operating_cost"] if "total_operating_cost" in frame.columns else pd.Series(np.nan, index=frame.index)
+    frame.loc[~cost_from_cogs & total_cost.notna(), "cost_source"] = "营业总成本"
+    frame["gm_valid"] = frame["cost_source"] == "营业成本"
+
+    frame["equity_source"] = pd.Series(pd.NA, index=frame.index, dtype="object")
+    if "equity_item" in frame.columns:
+        parent_eq = frame["equity_item"].fillna("").str.contains("归属于", na=False)
+        frame.loc[parent_eq, "equity_source"] = "parent"
+        frame.loc[frame["equity"].notna() & ~parent_eq, "equity_source"] = "total"
+
+    frame["avg_assets"] = average_level(frame["total_assets"], frame.get("total_assets_begin"))
+    frame["avg_equity"] = average_level(frame["equity"], frame.get("equity_begin"))
+
+    equity_end = pd.to_numeric(frame["equity"], errors="coerce")
+    avg_equity = pd.to_numeric(frame["avg_equity"], errors="coerce")
+    frame["equity_negative"] = (equity_end < 0) | (avg_equity <= 0)
+
+    assets = pd.to_numeric(frame.get("total_assets"), errors="coerce")
+    liabilities = pd.to_numeric(frame.get("total_liabilities"), errors="coerce")
+    frame["bs_gap"] = assets - (liabilities + equity_end)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = frame["bs_gap"].abs() / assets.abs()
+    rel = rel.mask(assets.fillna(0) == 0)
+    frame["bs_rel_gap"] = rel
+    can_check = assets.notna() & liabilities.notna() & equity_end.notna()
+    frame["bs_articulation_ok"] = pd.Series(pd.NA, index=frame.index, dtype="object")
+    frame.loc[can_check, "bs_articulation_ok"] = (rel.loc[can_check] <= BS_REL_TOL).to_numpy()
+
+    inventory = pd.to_numeric(frame.get("inventory"), errors="coerce")
+    status = pd.Series("missing", index=frame.index, dtype="object")
+    status = status.mask(inventory == 0, "zero")
+    status = status.mask(inventory.notna() & (inventory != 0), "positive")
+    frame["inventory_status"] = status
+
+    frame["np_truncated"] = frame["net_profit"].isna()
+    cf_rows = pd.to_numeric(frame.get("cashflow_n_rows"), errors="coerce").fillna(0)
+    frame["ocf_missing_kind"] = pd.Series(pd.NA, index=frame.index, dtype="object")
+    frame.loc[frame["ocf"].notna(), "ocf_missing_kind"] = "present"
+    frame.loc[frame["ocf"].isna() & (cf_rows > 0), "ocf_missing_kind"] = "truncated"
+    frame.loc[frame["ocf"].isna() & (cf_rows <= 0), "ocf_missing_kind"] = "no_statement"
+
+    frame["gross_margin"] = safe_div(frame["revenue"] - frame["cogs"], frame["revenue"])
+    frame.loc[~frame["gm_valid"], "gross_margin"] = np.nan
+    frame["net_margin"] = safe_div(frame["net_profit"], frame["revenue"])
+    frame["roe"] = safe_div(frame["net_profit"], frame["avg_equity"])
+    frame["asset_turnover"] = safe_div(frame["revenue"], frame["avg_assets"])
+    frame["equity_multiplier"] = safe_div(frame["avg_assets"], frame["avg_equity"])
+    frame.loc[frame["equity_negative"], ["roe", "equity_multiplier"]] = np.nan
+    frame["roe_valid"] = frame["net_profit"].notna() & avg_equity.notna() & ~frame["equity_negative"]
+    frame["dupont_product"] = frame["net_margin"] * frame["asset_turnover"] * frame["equity_multiplier"]
+    frame["current_ratio"] = safe_div(frame.get("current_assets"), frame.get("current_liabilities"))
+    frame["debt_ratio"] = safe_div(frame.get("total_liabilities"), frame.get("total_assets"))
+    frame["ar_to_revenue"] = safe_div(frame.get("accounts_receivable"), frame["revenue"])
+    frame["inventory_to_revenue"] = safe_div(frame.get("inventory"), frame["revenue"])
+    frame["ocf_to_revenue"] = safe_div(frame.get("ocf"), frame["revenue"])
+    np_amt = pd.to_numeric(frame["net_profit"], errors="coerce")
+    ocf_amt = pd.to_numeric(frame["ocf"], errors="coerce")
+    frame["ocf_minus_np"] = ocf_amt - np_amt
+    frame["accruals_to_revenue"] = safe_div(np_amt - ocf_amt, frame["revenue"])
+    frame["dso"] = safe_div(frame["accounts_receivable"], frame["revenue"]) * DAYS_PER_YEAR
+    cogs = pd.to_numeric(frame["cogs"], errors="coerce")
+    frame["dio"] = safe_div(inventory, cogs) * DAYS_PER_YEAR
+    frame.loc[~frame["gm_valid"], "dio"] = np.nan
+    payable = pd.to_numeric(frame.get("accounts_payable"), errors="coerce")
+    frame["dpo"] = safe_div(payable, cogs) * DAYS_PER_YEAR
+    frame.loc[~frame["gm_valid"], "dpo"] = np.nan
+    frame["operating_cycle"] = pd.to_numeric(frame["dso"], errors="coerce") + pd.to_numeric(frame["dio"], errors="coerce")
+    frame["ccc"] = frame["operating_cycle"] - pd.to_numeric(frame["dpo"], errors="coerce")
+    frame["dso_anomalous"] = days_anomalous(frame["dso"])
+    frame["dio_anomalous"] = days_anomalous(frame["dio"])
+    frame["dpo_anomalous"] = days_anomalous(frame["dpo"])
+    frame["revenue_yoy"] = yoy(frame["revenue"], frame.get("revenue_prior"))
+    frame["net_profit_yoy"] = yoy(frame["net_profit"], frame.get("net_profit_prior"))
+    frame["ocf_yoy"] = yoy(frame["ocf"], frame.get("ocf_prior"))
+
+    for col in RATIO_COLS + ["ocf_minus_np"]:
+        frame[f"{col}_w"] = winsorize_series(frame[col])
+    return frame
+
+
 def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
-    """Wide table: amounts, ratios, YoY, DuPont identity, winsorized ratios."""
+    """Wide table: amounts, quality flags, valid ratios, YoY, winsorized ratios."""
     income = load_statement(csv_dir, "利润表")
     balance = load_statement(csv_dir, "资产负债表")
     cashflow = load_statement(csv_dir, "现金流量表")
@@ -336,6 +504,7 @@ def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
     equity_begin = pick_amount(balance, score_equity, value_col="prior")
     ar = pick_amount(balance, score_accounts_receivable)
     inventory = pick_amount(balance, score_inventory)
+    payable = pick_amount(balance, score_accounts_payable)
 
     ocf = pick_amount(cashflow, score_ocf)
     ocf_prior = pick_amount(cashflow, score_ocf, value_col="prior")
@@ -355,51 +524,21 @@ def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
     wide = _merge_pick(wide, equity_begin, "equity_begin")
     wide = _merge_pick(wide, ar, "accounts_receivable")
     wide = _merge_pick(wide, inventory, "inventory")
+    wide = _merge_pick(wide, payable, "accounts_payable")
     wide = _merge_pick(wide, ocf, "ocf")
     wide = _merge_pick(wide, ocf_prior, "ocf_prior")
+    wide = _merge_counts(wide, statement_meta(income), "income_n_rows")
+    wide = _merge_counts(wide, statement_meta(balance), "balance_n_rows")
+    wide = _merge_counts(wide, statement_meta(cashflow), "cashflow_n_rows")
 
     if wide.empty:
         return wide
-
-    cost_from_cogs = wide["cogs"].notna()
-    wide["cogs"] = wide["cogs"].where(cost_from_cogs, wide.get("total_operating_cost"))
-    wide["cost_source"] = pd.Series(pd.NA, index=wide.index, dtype="object")
-    wide.loc[cost_from_cogs, "cost_source"] = "营业成本"
-    wide.loc[~cost_from_cogs & wide["cogs"].notna(), "cost_source"] = "营业总成本"
-
-    wide["equity_source"] = pd.Series(pd.NA, index=wide.index, dtype="object")
-    if "equity_item" in wide.columns:
-        parent_eq = wide["equity_item"].fillna("").str.contains("归属于", na=False)
-        wide.loc[parent_eq, "equity_source"] = "parent"
-        wide.loc[wide["equity"].notna() & ~parent_eq, "equity_source"] = "total"
 
     wide = wide[wide["revenue"].notna() & (wide["revenue"] >= min_revenue)].copy()
     if wide.empty:
         return wide
 
-    wide["avg_assets"] = average_level(wide["total_assets"], wide["total_assets_begin"])
-    wide["avg_equity"] = average_level(wide["equity"], wide["equity_begin"])
-
-    wide["gross_margin"] = safe_div(wide["revenue"] - wide["cogs"], wide["revenue"])
-    wide["net_margin"] = safe_div(wide["net_profit"], wide["revenue"])
-    wide["roe"] = safe_div(wide["net_profit"], wide["avg_equity"])
-    wide["asset_turnover"] = safe_div(wide["revenue"], wide["avg_assets"])
-    wide["equity_multiplier"] = safe_div(wide["avg_assets"], wide["avg_equity"])
-    wide["dupont_product"] = wide["net_margin"] * wide["asset_turnover"] * wide["equity_multiplier"]
-    wide["current_ratio"] = safe_div(wide["current_assets"], wide["current_liabilities"])
-    wide["debt_ratio"] = safe_div(wide["total_liabilities"], wide["total_assets"])
-    wide["ar_to_revenue"] = safe_div(wide["accounts_receivable"], wide["revenue"])
-    wide["inventory_to_revenue"] = safe_div(wide["inventory"], wide["revenue"])
-    wide["ocf_to_revenue"] = safe_div(wide["ocf"], wide["revenue"])
-    wide["ocf_minus_np"] = pd.to_numeric(wide["ocf"], errors="coerce") - pd.to_numeric(
-        wide["net_profit"], errors="coerce"
-    )
-    wide["revenue_yoy"] = yoy(wide["revenue"], wide["revenue_prior"])
-    wide["net_profit_yoy"] = yoy(wide["net_profit"], wide["net_profit_prior"])
-    wide["ocf_yoy"] = yoy(wide["ocf"], wide["ocf_prior"])
-
-    for col in RATIO_COLS + ["ocf_minus_np"]:
-        wide[f"{col}_w"] = winsorize_series(wide[col])
+    wide = add_ratios_and_flags(wide)
 
     front = ID_COLS + [
         "revenue_item",
@@ -409,9 +548,15 @@ def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
     ordered = [col for col in front if col in wide.columns]
     ordered += [col for col in AMOUNT_COLS if col in wide.columns]
     ordered += ["avg_assets", "avg_equity"]
+    ordered += FLAG_COLS
     ordered += RATIO_COLS + ["dupont_product", "ocf_minus_np"]
     ordered += [f"{col}_w" for col in RATIO_COLS + ["ocf_minus_np"]]
-    rest = [col for col in wide.columns if col not in ordered and col not in ("cogs_item", "equity_item", "total_operating_cost")]
+    rest = [
+        col
+        for col in wide.columns
+        if col not in ordered and col not in ("cogs_item", "equity_item")
+    ]
+    ordered = [col for col in ordered if col in wide.columns]
     wide = wide[ordered + rest].sort_values(["stock_code", "year"]).reset_index(drop=True)
     return wide
 
@@ -421,15 +566,59 @@ def coverage_table(metrics):
     if metrics is None or metrics.empty:
         return pd.DataFrame(columns=["field", "n", "share"])
     n = len(metrics)
-    fields = ["revenue", "cogs", "net_profit", "total_assets", "equity", "current_assets",
-              "current_liabilities", "accounts_receivable", "inventory", "ocf",
-              "gross_margin", "roe", "revenue_yoy"]
+    fields = [
+        "revenue",
+        "cogs",
+        "net_profit",
+        "total_assets",
+        "equity",
+        "current_assets",
+        "current_liabilities",
+        "accounts_receivable",
+        "inventory",
+        "accounts_payable",
+        "ocf",
+        "gross_margin",
+        "roe",
+        "dso",
+        "dio",
+        "accruals_to_revenue",
+        "revenue_yoy",
+    ]
     rows = []
     for field in fields:
         if field not in metrics.columns:
             continue
         k = int(metrics[field].notna().sum())
         rows.append({"field": field, "n": k, "share": k / n})
+    return pd.DataFrame(rows)
+
+
+def quality_summary(metrics):
+    """Counts for statement-quality flags (preprocessing, not sample screening)."""
+    if metrics is None or metrics.empty:
+        return pd.DataFrame(columns=["flag", "n", "share"])
+    n = len(metrics)
+    rows = [{"flag": "firms", "n": n, "share": 1.0}]
+
+    def add(name, mask):
+        k = int(mask.fillna(False).sum())
+        rows.append({"flag": name, "n": k, "share": k / n})
+
+    add("gm_valid", metrics["gm_valid"] == True)
+    add("gm_from_total_cost", metrics["cost_source"] == "营业总成本")
+    add("equity_negative", metrics["equity_negative"] == True)
+    add("roe_valid", metrics["roe_valid"] == True)
+    checked = metrics["bs_articulation_ok"].notna()
+    add("bs_checked", checked)
+    add("bs_articulation_fail", checked & (metrics["bs_articulation_ok"] == False))
+    add("np_truncated", metrics["np_truncated"] == True)
+    add("ocf_truncated", metrics["ocf_missing_kind"] == "truncated")
+    add("ocf_no_statement", metrics["ocf_missing_kind"] == "no_statement")
+    add("inventory_zero", metrics["inventory_status"] == "zero")
+    add("inventory_missing", metrics["inventory_status"] == "missing")
+    add("dso_anomalous", metrics["dso_anomalous"] == True)
+    add("dio_anomalous", metrics["dio_anomalous"] == True)
     return pd.DataFrame(rows)
 
 
@@ -464,18 +653,30 @@ def main(csv_dir=None, output_dir=None, min_revenue=MIN_REVENUE_CNY):
         os.remove(cov_path)
     coverage.to_csv(cov_path, index=False, encoding="utf-8-sig")
 
+    quality = quality_summary(metrics)
+    q_path = os.path.join(output_dir, QUALITY_NAME)
+    if os.path.exists(q_path):
+        os.remove(q_path)
+    quality.to_csv(q_path, index=False, encoding="utf-8-sig")
+
     print(f"rows: {len(metrics)}  companies: {metrics['stock_code'].nunique()}")
     print("coverage:")
     for _, row in coverage.iterrows():
         print(f"  {row['field']}: {int(row['n'])} ({row['share'] * 100:.1f}%)")
-    if "gross_margin" in metrics.columns:
-        print(f"median gross_margin: {metrics['gross_margin'].median():.3f}")
-    if "net_margin" in metrics.columns:
-        print(f"median net_margin: {metrics['net_margin'].median():.3f}")
-    if "ocf_to_revenue" in metrics.columns:
-        print(f"median ocf/revenue: {metrics['ocf_to_revenue'].median():.3f}")
+    print("quality flags:")
+    for _, row in quality.iterrows():
+        print(f"  {row['flag']}: {int(row['n'])} ({row['share'] * 100:.1f}%)")
+    gm = metrics.loc[metrics["gm_valid"] == True, "gross_margin"] if "gm_valid" in metrics.columns else metrics.get("gross_margin")
+    if gm is not None and gm.notna().any():
+        print(f"median gross_margin (gm_valid): {gm.median():.3f}")
+    dso_ok = metrics.loc[metrics["dso_anomalous"] != True, "dso"] if "dso" in metrics.columns else None
+    if dso_ok is not None and dso_ok.notna().any():
+        print(f"median DSO (days, cap {DAYS_ANOMALY:.0f}): {dso_ok.median():.1f}")
+    if "accruals_to_revenue" in metrics.columns:
+        print(f"median accruals/revenue: {metrics['accruals_to_revenue'].median():.3f}")
     print(f"wrote {out_path}")
     print(f"wrote {cov_path}")
+    print(f"wrote {q_path}")
     print("dictionary: company_metrics_dictionary.md")
     return metrics
 

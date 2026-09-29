@@ -4,13 +4,9 @@ NEEQ 财报数据分析 / NEEQ Financial Data Analysis
 新三板企业财务数据采集与分析项目 — 数据分析模块
 NEEQ Financial Data Collection & Analysis Project — Data Analysis Module
 
-分析内容 / Analysis Contents:
-1. 数据概览 / Data Overview
-2. 营收分析 / Revenue Analysis
-3. 盈利能力分析 / Profitability Analysis
-4. 现金流分析 / Cash Flow Analysis
-5. 行业对比 / Industry Comparison
-6. 可视化 / Visualization
+描述统计入口（营收 / 毛利率直方图 / OCF 正负）。行业营运资金与盈余质量
+在 industry_portrait.py；报表质量标记在 company_metrics.py。
+营收低于 10 万元是样本筛选（附注编号），不是报表勾稽清洗。
 """
 
 import pandas as pd
@@ -26,8 +22,11 @@ warnings.filterwarnings('ignore')
 # 配置 / Configuration
 # ============================================================
 
-CSV_DIR = os.path.join(os.path.dirname(__file__), 'output', 'csv')
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'output', 'analysis')
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+_CSV_255 = os.path.join(_ROOT, 'output', 'analysis', '_csv_255')
+_CSV_MIXED = os.path.join(_ROOT, 'output', 'csv')
+CSV_DIR = _CSV_255 if os.path.isdir(_CSV_255) else _CSV_MIXED
+OUTPUT_DIR = os.path.join(_ROOT, 'output', 'analysis')
 
 # 低于该金额的「营收」多半是附注编号/错列（1.0、17.4），不进入描述统计
 MIN_REVENUE_CNY = 100_000
@@ -97,13 +96,51 @@ def load_csvs(statement_type):
     return pd.DataFrame(records)
 
 
+MISSING_TOKENS = {
+    "",
+    "-",
+    "--",
+    "---",
+    "—",
+    "–",
+    "－",
+    "/",
+    "\\",
+    "*",
+    "无",
+    "未知",
+    "不适用",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "nan",
+    "nat",
+}
+
+
+def is_missing_token(value):
+    """True for blank / dash / 未知-style placeholders, not for numeric '-123'."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return True
+    if isinstance(value, (int, float)):
+        return False
+    text = str(value).replace("\u3000", " ").strip()
+    if text == "":
+        return True
+    return text.lower() in MISSING_TOKENS
+
+
 def to_numeric_safe(value):
-    """安全转换为数值 / Safely convert to numeric"""
+    """Unify missing tokens then parse a number. '-123' stays numeric; '--' becomes NaN."""
     if pd.isna(value) or value is None:
         return np.nan
     if isinstance(value, (int, float)):
         return float(value)
-    s = str(value).replace(',', '').replace('%', '').replace('"', '').strip()
+    if is_missing_token(value):
+        return np.nan
+    s = str(value).replace(",", "").replace("%", "").replace('"', "").replace("\u3000", " ").strip()
+    s = s.replace(" ", "")
     try:
         return float(s)
     except ValueError:
@@ -415,7 +452,7 @@ def main(csv_dir=None, output_dir=None):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='NEEQ financial descriptive stats')
-    parser.add_argument('--csv-dir', default=None, help='CSV folder (default output/csv)')
+    parser.add_argument('--csv-dir', default=None, help='CSV folder (default output/analysis/_csv_255 when present)')
     parser.add_argument('--output-dir', default=None, help='Chart/summary folder')
     args = parser.parse_args()
     main(csv_dir=args.csv_dir, output_dir=args.output_dir)

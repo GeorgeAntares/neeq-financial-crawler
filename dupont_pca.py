@@ -1,8 +1,10 @@
 """
-DuPont identity check, Spearman correlations, and SVD PCA.
+Industry DuPont ROE decomposition, identity check, Spearman, and SVD PCA.
 
+Cover: how net margin, turnover and leverage differ by industry.
+Complete-case is by question (valid ROE), not a global drop of the 195-firm table.
+IQR drop and winsorized columns are robustness. Identity and PCA stay appendix.
 PCA is numpy-only (no sklearn) so CI can run the math without the ML extra.
-Components are read as 规模 / 杠杆 / 现金 from loadings.
 """
 from __future__ import annotations
 
@@ -13,6 +15,9 @@ import numpy as np
 import pandas as pd
 
 from company_metrics import OUTPUT_DIR_DEFAULT
+from industry_groups import GROUP_MANUFACTURING, GROUP_ORDER, GROUP_SOFTWARE, PDF_DIR_DEFAULT
+from industry_portrait import attach_industry
+from preprocess import add_iqr_flags
 
 IDENTITY_ATOL = 1e-8
 
@@ -41,6 +46,8 @@ CORR_COLS = [
     "ar_to_revenue",
     "inventory_to_revenue",
     "ocf_to_revenue",
+    "accruals_to_revenue",
+    "dso",
     "log_revenue",
 ]
 CORR_LABELS = {
@@ -54,15 +61,27 @@ CORR_LABELS = {
     "ar_to_revenue": "应收/收入",
     "inventory_to_revenue": "存货/收入",
     "ocf_to_revenue": "OCF/收入",
+    "accruals_to_revenue": "应计/收入",
+    "dso": "DSO",
     "log_revenue": "log营收",
 }
 
 CHART_NAME = "dupont_pca.png"
 REPORT_NAME = "dupont_pca.md"
 IDENTITY_NAME = "dupont_check.csv"
+INDUSTRY_DUPONT_NAME = "dupont_industry.csv"
 CORR_NAME = "correlation_spearman.csv"
 LOADINGS_NAME = "pca_loadings.csv"
 VARIANCE_NAME = "pca_variance.csv"
+COVERAGE_NAME = "dupont_coverage.csv"
+SENSITIVITY_NAME = "dupont_sensitivity.csv"
+
+DUPONT_TREATMENTS = ("quality", "iqr", "winsor")
+DUPONT_TREAT_LABEL = {
+    "quality": "主口径",
+    "iqr": "去掉 ROE 的 IQR 离群",
+    "winsor": "1%/99% 缩尾列",
+}
 
 
 def add_size_logs(metrics):
@@ -73,6 +92,148 @@ def add_size_logs(metrics):
         frame["log_revenue"] = np.where(revenue > 0, np.log10(revenue), np.nan)
         frame["log_assets"] = np.where(assets > 0, np.log10(assets), np.nan)
     return frame
+
+
+def industry_dupont_table(metrics, colmap=None, extra_mask=None):
+    """Median NM / turnover / leverage / ROE by industry on valid-ROE rows."""
+    mapping = {
+        "roe": "roe",
+        "net_margin": "net_margin",
+        "asset_turnover": "asset_turnover",
+        "equity_multiplier": "equity_multiplier",
+        "dupont_product": "dupont_product",
+    }
+    if colmap:
+        mapping.update(colmap)
+    need = [mapping["roe"], mapping["net_margin"], mapping["asset_turnover"], mapping["equity_multiplier"]]
+    work = metrics.copy()
+    if extra_mask is not None:
+        mask = extra_mask.reindex(work.index).fillna(False).astype(bool)
+        work = work.loc[mask].copy()
+    if "industry" not in work.columns:
+        work["industry"] = "其他"
+    for col in need:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+        else:
+            work[col] = np.nan
+    if "roe_valid" in work.columns:
+        work = work[work["roe_valid"] == True]
+    present = [c for c in need if c in work.columns]
+    work = work.dropna(subset=present)
+    rows = []
+    groups = list(GROUP_ORDER)
+    extra = [g for g in work["industry"].dropna().unique() if g not in groups]
+    for group in groups + extra:
+        part = work[work["industry"] == group]
+        empty = {
+            "industry": group,
+            "n": 0,
+            "median_net_margin": np.nan,
+            "median_asset_turnover": np.nan,
+            "median_equity_multiplier": np.nan,
+            "median_roe": np.nan,
+            "product_of_medians": np.nan,
+            "median_dupont_product": np.nan,
+        }
+        if part.empty:
+            rows.append(empty)
+            continue
+        nm = float(part[mapping["net_margin"]].median())
+        at = float(part[mapping["asset_turnover"]].median())
+        em = float(part[mapping["equity_multiplier"]].median())
+        roe = float(part[mapping["roe"]].median())
+        product = nm * at * em
+        prod_col = mapping["dupont_product"]
+        med_prod = float(part[prod_col].median()) if prod_col in part.columns else product
+        rows.append(
+            {
+                "industry": group,
+                "n": int(len(part)),
+                "median_net_margin": nm,
+                "median_asset_turnover": at,
+                "median_equity_multiplier": em,
+                "median_roe": roe,
+                "product_of_medians": product,
+                "median_dupont_product": med_prod,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def dupont_coverage(metrics):
+    """Why a firm is in or out of the DuPont complete case."""
+    n = int(len(metrics))
+    np_ok = pd.to_numeric(metrics.get("net_profit"), errors="coerce").notna() if n else pd.Series(dtype=bool)
+    n_np = int(np_ok.sum()) if n else 0
+    n_trunc = int((metrics["np_truncated"] == True).sum()) if "np_truncated" in metrics.columns else int((~np_ok).sum()) if n else 0
+    n_eq_neg = int((metrics["equity_negative"] == True).sum()) if "equity_negative" in metrics.columns else 0
+    if "roe_valid" in metrics.columns:
+        n_roe = int((metrics["roe_valid"] == True).sum())
+    else:
+        n_roe = int(pd.to_numeric(metrics.get("roe"), errors="coerce").notna().sum()) if n else 0
+    four = metrics.copy()
+    for col in ("roe", "net_margin", "asset_turnover", "equity_multiplier"):
+        if col in four.columns:
+            four[col] = pd.to_numeric(four[col], errors="coerce")
+        else:
+            four[col] = np.nan
+    if "roe_valid" in four.columns:
+        four = four[four["roe_valid"] == True]
+    four = four.dropna(subset=["roe", "net_margin", "asset_turnover", "equity_multiplier"])
+    n_four = int(len(four))
+    n_at = int(pd.to_numeric(metrics.get("asset_turnover"), errors="coerce").notna().sum()) if n else 0
+    return pd.DataFrame(
+        [
+            {"item": "有效营收", "n": n, "mechanism": "样本筛选：营收 ≥ 10 万元。"},
+            {"item": "有净利润", "n": n_np, "mechanism": f"缺的主要是第一张利润表截断（{n_trunc} 家），保持 NaN。"},
+            {"item": "权益非正冻结", "n": n_eq_neg, "mechanism": "ROE / 乘数没有经济含义，不进杜邦。"},
+            {"item": "有效 ROE", "n": n_roe, "mechanism": "有净利润、有平均权益、且非负权益。"},
+            {"item": "有总资产周转", "n": n_at, "mechanism": "缺平均资产则周转缺失。"},
+            {"item": "四项齐全", "n": n_four, "mechanism": "净利率、周转、乘数、ROE 同时非空，用于恒等式。"},
+        ]
+    )
+
+
+def industry_dupont_sensitivity(metrics):
+    """Valid-ROE medians vs drop ROE IQR outliers vs winsorized columns."""
+    work = metrics.copy()
+    if "roe_iqr_out" not in work.columns:
+        cols = [c for c in ("roe", "net_margin") if c in work.columns]
+        if cols:
+            work = add_iqr_flags(work, columns=cols)
+    rows = []
+    quality = industry_dupont_table(work)
+    quality["treatment"] = "quality"
+    quality["treatment_label"] = DUPONT_TREAT_LABEL["quality"]
+    rows.append(quality)
+
+    if "roe_iqr_out" in work.columns:
+        keep = work["roe_iqr_out"] != True
+        iqr = industry_dupont_table(work, extra_mask=keep)
+    else:
+        iqr = quality.copy()
+    iqr["treatment"] = "iqr"
+    iqr["treatment_label"] = DUPONT_TREAT_LABEL["iqr"]
+    rows.append(iqr)
+
+    wins_cols = ["roe_w", "net_margin_w", "asset_turnover_w", "equity_multiplier_w"]
+    if all(c in work.columns for c in wins_cols):
+        wins = industry_dupont_table(
+            work,
+            colmap={
+                "roe": "roe_w",
+                "net_margin": "net_margin_w",
+                "asset_turnover": "asset_turnover_w",
+                "equity_multiplier": "equity_multiplier_w",
+            },
+        )
+    else:
+        wins = quality.copy()
+    wins["treatment"] = "winsor"
+    wins["treatment_label"] = DUPONT_TREAT_LABEL["winsor"]
+    rows.append(wins)
+    return pd.concat(rows, ignore_index=True)
 
 
 def dupont_identity(metrics, atol=IDENTITY_ATOL):
@@ -228,23 +389,124 @@ def _num(value, digits=4):
     return f"{number:.{digits}f}"
 
 
-def render_report(identity, assoc, var_shares, corr, load_df, var_df, n_metrics, n_pca):
+def render_report(
+    identity, assoc, var_shares, corr, load_df, var_df, n_metrics, n_pca,
+    industry_df=None, coverage=None, sensitivity=None,
+):
     lines = [
-        "# 杜邦核对与主成分",
+        "# 行业杜邦分解",
         "",
         f"样本来自 `company_metrics.csv`（{n_metrics} 家有效营收）。",
         "杜邦：ROE = 净利率 × 总资产周转 × 权益乘数（资产/权益用期初期末平均）。",
-        "相关阵用 Spearman（秩相关，少受极端值拉动）。",
-        "PCA：8 个已截尾指标，列标准化后做 SVD，不依赖 scikit-learn。",
+        "这是第三个分析问题，完整个案按有效 ROE 取，不把 195 家硬删成一张表。",
+        "权益非正的公司不进入 ROE 和乘数。中位数之积不等于乘积的中位数，两列都报。",
+        "IQR 剔除和缩尾列只做稳健，不改主口径。",
         "",
-        "## 杜邦恒等式",
+    ]
+    if coverage is not None and not coverage.empty:
+        lines += [
+            "## 谁进杜邦样本",
+            "",
+            "| 口径 | 家数 | 机制 |",
+            "|------|------|------|",
+        ]
+        for _, row in coverage.iterrows():
+            lines.append(f"| {row['item']} | {int(row['n'])} | {row['mechanism']} |")
+        lines.append("")
+    lines += [
+        "## 分行业 ROE",
+        "",
+        "| 行业 | 家数 | 净利率 | 总资产周转 | 权益乘数 | 中位数 ROE | 中位数之积 |",
+        "|------|------|--------|------------|----------|------------|------------|",
+    ]
+    if industry_df is not None and not industry_df.empty:
+        for _, row in industry_df.iterrows():
+            lines.append(
+                "| {ind} | {n} | {nm} | {at} | {em} | {roe} | {prod} |".format(
+                    ind=row["industry"],
+                    n=int(row["n"]),
+                    nm=_pct(row["median_net_margin"]),
+                    at=_num(row["median_asset_turnover"], 3),
+                    em=_num(row["median_equity_multiplier"], 3),
+                    roe=_pct(row["median_roe"]),
+                    prod=_pct(row["product_of_medians"]),
+                )
+            )
+        mfg = industry_df[industry_df["industry"] == "制造"]
+        sw = industry_df[industry_df["industry"] == "软件信息"]
+        if not mfg.empty and not sw.empty and int(mfg.iloc[0]["n"]) and int(sw.iloc[0]["n"]):
+            m, s = mfg.iloc[0], sw.iloc[0]
+            drivers = []
+            if s["median_net_margin"] < m["median_net_margin"]:
+                drivers.append("软件净利率更低")
+            else:
+                drivers.append("软件净利率不低于制造")
+            if s["median_asset_turnover"] < m["median_asset_turnover"]:
+                drivers.append("周转更慢")
+            else:
+                drivers.append("周转不低于制造")
+            if s["median_equity_multiplier"] > m["median_equity_multiplier"]:
+                drivers.append("杠杆更高")
+            else:
+                drivers.append("杠杆不高")
+            lines += [
+                "",
+                "制造中位数 ROE {m_roe}，软件 {s_roe}：{drivers}。".format(
+                    m_roe=_pct(m["median_roe"]),
+                    s_roe=_pct(s["median_roe"]),
+                    drivers="，".join(drivers),
+                ),
+            ]
+    if sensitivity is not None and not sensitivity.empty:
+        lines += [
+            "",
+            "## 稳健",
+            "",
+            "主口径用有效 ROE 原始列。IQR 围栏在全样本 ROE 上算；缩尾用 `*_w`。",
+            "",
+            "| 口径 | 行业 | 家数 | 净利率 | 周转 | 乘数 | 中位数 ROE |",
+            "|------|------|------|--------|------|------|------------|",
+        ]
+        for treatment in DUPONT_TREATMENTS:
+            part = sensitivity[sensitivity["treatment"] == treatment]
+            for _, row in part.iterrows():
+                if int(row["n"]) == 0:
+                    continue
+                lines.append(
+                    "| {lab} | {ind} | {n} | {nm} | {at} | {em} | {roe} |".format(
+                        lab=row["treatment_label"],
+                        ind=row["industry"],
+                        n=int(row["n"]),
+                        nm=_pct(row["median_net_margin"]),
+                        at=_num(row["median_asset_turnover"], 3),
+                        em=_num(row["median_equity_multiplier"], 3),
+                        roe=_pct(row["median_roe"]),
+                    )
+                )
+        q_mfg = sensitivity[(sensitivity["treatment"] == "quality") & (sensitivity["industry"] == GROUP_MANUFACTURING)]
+        q_sw = sensitivity[(sensitivity["treatment"] == "quality") & (sensitivity["industry"] == GROUP_SOFTWARE)]
+        holds = []
+        if not q_mfg.empty and not q_sw.empty:
+            for treatment in DUPONT_TREATMENTS:
+                m_row = sensitivity[(sensitivity["treatment"] == treatment) & (sensitivity["industry"] == GROUP_MANUFACTURING)]
+                s_row = sensitivity[(sensitivity["treatment"] == treatment) & (sensitivity["industry"] == GROUP_SOFTWARE)]
+                if m_row.empty or s_row.empty:
+                    continue
+                if pd.notna(m_row.iloc[0]["median_roe"]) and pd.notna(s_row.iloc[0]["median_roe"]):
+                    if m_row.iloc[0]["median_roe"] > s_row.iloc[0]["median_roe"]:
+                        holds.append(DUPONT_TREAT_LABEL[treatment])
+        if holds:
+            lines += ["", "制造 ROE 高于软件的口径：" + "、".join(holds) + "。"]
+    lines += [
+        "",
+        "## 恒等式（质量核对）",
         "",
         f"- 可核对家数：{identity['n']}",
         f"- |乘积 − ROE| 最大：{_num(identity['max_abs_gap'])}",
         f"- 中位差距：{_num(identity['median_abs_gap'])}",
         f"- 差距 ≤ {IDENTITY_ATOL:g} 的家数：{identity['n_match']}",
         "",
-        "恒等式在完整样本上成立，后面的分解用的是同一套科目。",
+        "恒等式只说明科目口径一致，不是分析结果。",
         "",
         "## ROE 与三个因子",
         "",
@@ -279,9 +541,10 @@ def render_report(identity, assoc, var_shares, corr, load_df, var_df, n_metrics,
                 lines.append(f"- `{name}`：{signed:.3f}")
     lines += [
         "",
-        "## PCA（规模 / 杠杆 / 现金）",
+        "## 附录：主成分（规模 / 杠杆 / 现金）",
         "",
-        f"完整个案 {n_pca} 家。规模：log营收、log资产；杠杆：资产负债率、权益乘数、流动比率；现金：应收/收入、存货/收入、OCF/收入（比率用 1%/99% 截尾列）。",
+        f"完整个案 {n_pca} 家（8 个指标同时非空，不是按营收样本删公司），用来看截面相关结构，不是 ROE 分解。"
+        "规模：log营收、log资产；杠杆：资产负债率、权益乘数、流动比率；现金：应收/收入、存货/收入、OCF/收入（比率用 1%/99% 截尾列）。",
         "",
         "| 成分 | 解释比例 | 累计 | 按载荷归入 |",
         "|------|----------|------|------------|",
@@ -307,6 +570,7 @@ def render_report(identity, assoc, var_shares, corr, load_df, var_df, n_metrics,
         "- PCA 只用完整个案，比营收样本更少；缺净利润或资产负债表的公司不在里面。",
         "- 对数方差分解丢掉亏损和负权益，只描述仍能取对数的子集。",
         "- 主成分是相关结构，不是因果。",
+        "- 软件有效 ROE 家数少，中位数对单家敏感；稳健表用来看方向会不会翻。",
         "",
     ]
     return "\n".join(lines)
@@ -374,30 +638,41 @@ def load_metrics(metrics_path):
     return pd.read_csv(path, encoding="utf-8-sig")
 
 
-def main(metrics_path=None, output_dir=None, report_path=None):
+def main(metrics_path=None, output_dir=None, report_path=None, pdf_dir=None):
     output_dir = output_dir or OUTPUT_DIR_DEFAULT
     os.makedirs(output_dir, exist_ok=True)
     metrics = load_metrics(metrics_path)
     print("=" * 60)
-    print("DuPont + PCA")
+    print("Industry DuPont + PCA appendix")
     print("=" * 60)
     if metrics.empty:
         print("No company_metrics.csv. Run company_metrics.py first.")
         return None
 
-    frame = add_size_logs(metrics)
+    labeled = attach_industry(metrics, pdf_root=pdf_dir or PDF_DIR_DEFAULT)
+    frame = add_size_logs(labeled)
     identity = dupont_identity(frame)
     assoc = dupont_factor_assoc(frame)
     shares = log_variance_shares(frame)
     corr = spearman_matrix(frame, CORR_COLS)
     complete, load_df, var_df = pca_tables(frame)
+    industry_df = industry_dupont_table(frame)
+    coverage = dupont_coverage(frame)
+    sensitivity = industry_dupont_sensitivity(frame)
 
     pd.DataFrame([identity]).to_csv(os.path.join(output_dir, IDENTITY_NAME), index=False, encoding="utf-8-sig")
+    industry_df.to_csv(os.path.join(output_dir, INDUSTRY_DUPONT_NAME), index=False, encoding="utf-8-sig")
+    coverage.to_csv(os.path.join(output_dir, COVERAGE_NAME), index=False, encoding="utf-8-sig")
+    sensitivity.to_csv(os.path.join(output_dir, SENSITIVITY_NAME), index=False, encoding="utf-8-sig")
     corr.to_csv(os.path.join(output_dir, CORR_NAME), encoding="utf-8-sig")
     load_df.to_csv(os.path.join(output_dir, LOADINGS_NAME), index=False, encoding="utf-8-sig")
     var_df.to_csv(os.path.join(output_dir, VARIANCE_NAME), index=False, encoding="utf-8-sig")
 
-    report = render_report(identity, assoc, shares, corr, load_df, var_df, n_metrics=len(frame), n_pca=len(complete))
+    report = render_report(
+        identity, assoc, shares, corr, load_df, var_df,
+        n_metrics=len(frame), n_pca=len(complete), industry_df=industry_df,
+        coverage=coverage, sensitivity=sensitivity,
+    )
     md_path = os.path.join(output_dir, REPORT_NAME)
     with open(md_path, "w", encoding="utf-8") as handle:
         handle.write(report)
@@ -407,6 +682,7 @@ def main(metrics_path=None, output_dir=None, report_path=None):
 
     chart_path = plot_figures(corr, load_df, var_df, output_dir)
     print(f"dupont n={identity['n']} max|gap|={identity['max_abs_gap']:.3e} match={identity['n_match']}")
+    print(industry_df.to_string(index=False))
     print(f"pca n={len(complete)}")
     if not var_df.empty:
         print(var_df.head(3).to_string(index=False))
@@ -418,9 +694,15 @@ def main(metrics_path=None, output_dir=None, report_path=None):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="DuPont check, Spearman correlations, SVD PCA")
+    parser = argparse.ArgumentParser(description="Industry DuPont decomposition, identity, SVD PCA")
     parser.add_argument("--metrics", default=None, help="company_metrics.csv")
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--pdf-dir", default=None, help="PDF folder with industry subdirs")
     parser.add_argument("--report", default=None, help="Optional extra markdown path")
     args = parser.parse_args()
-    main(metrics_path=args.metrics, output_dir=args.output_dir, report_path=args.report)
+    main(
+        metrics_path=args.metrics,
+        output_dir=args.output_dir,
+        report_path=args.report,
+        pdf_dir=args.pdf_dir,
+    )

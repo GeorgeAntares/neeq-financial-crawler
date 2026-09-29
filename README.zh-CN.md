@@ -112,15 +112,17 @@ pdfplumber（文本层）→ PyMuPDF（备用文本）→ RapidOCR（页面截�
 
 完整报告：[`ANALYSIS_REPORT.md`](ANALYSIS_REPORT.md)。指标公式：[`company_metrics_dictionary.md`](company_metrics_dictionary.md)。
 
-新解析器约 255 套 CSV（只取第一张合并表，营收 ≥ 10 万元）：
+新解析器约 255 套 CSV（只取第一张合并表，营收 ≥ 10 万元）。**预处理不是一次筛选**：解析截断、营收门槛、报表质量标记、分位截尾是四层。
 
-- **195** 家。营收中位数 1.64 亿元，毛利率 25.7%，应收/收入 31.7%，存货/收入 22.9%。
-- 行业收成制造 90 / 软件信息 26 / 其他 79。软件应收更重（49% vs 29%），毛利更高、经营现金更跳；「利润为正且 OCF 为负」为 8.5% / 0% / 17%。
-- 杜邦恒等式在 104 家上成立（最大误差 3.6×10⁻¹⁵）。ROE 主要跟着净利率（Spearman 0.72）。SVD 主成分：PC1 规模 34%，PC2 杠杆 20%，PC3 现金 14%。
-- 现金缺口分类（12 / 109 正例）：只用资产负债和利润表比率，不放 OCF 分项和净利率/ROE。逻辑回归 5 折 ROC **0.52 ± 0.11**，PR-AUC 0.19（基线 11%）。随机森林在 0.5 阈值下折外召回为 0。
+- **195** 家。毛利只认营业成本（187 家可算，中位数 26.0%）；负权益 7 家冻结 ROE；资产负债表 158 家勾稽，只有 1 家相对差距 > 1%。净利润缺 70 家是第一张表截断。
+- 营运资金按问题完整个案：主口径软件 DSO 179 天（n=24）、制造 105 天（n=80）；去掉 IQR 离群后变成 97 对 102，长账期是右尾。制造 DIO 只略高（113 vs 100）。软件 23% 缺存货行，不是存货为 0。
+- 盈余质量：应计/收入中位数 −4.5%（n=109）。利润<0 且 OCF>0 有 21 家，利润>0 且 OCF<0 只有 12 家。IQR 后制造 / 软件应计中位数不动。
+- 行业杜邦（有效 ROE 109 家）：制造 4.4%，软件 0.5%，差在净利率。IQR 后仍是制造更高（5.9% vs 2.6%）。冻掉负权益后 ROE 与净利率 Spearman 0.90。
+- 附录：12 例现金缺口分类几乎没有信号（logit ROC 0.53）；旧「OCF>0 且现金净增加>0」仍是对照。
 
 ```bash
 python company_metrics.py --csv-dir output/analysis/_csv_255
+python preprocess.py              # 字段体检、缺失机制、IQR、处理前后图
 python industry_portrait.py
 python dupont_pca.py
 python cash_gap_model.py          # 需要 scikit-learn；shap 可选
@@ -132,11 +134,11 @@ python dl_financial_health.py     # 附录 MLP
 python csv_to_pdf.py
 ```
 
-`financial_analysis.py` 会丢掉营收低于 10 万元的样本，成本优先「营业成本」，毛利率图截到 [-50%, 80%]。图用新文件名（`financial_analysis_clean.png`），避免 Windows 资源管理器仍显示旧的创建时间。
+`company_metrics.py` 做报表质量标记（勾稽、毛利口径、负权益、存货 0 vs 缺失、DSO/DIO 帽）。`preprocess.py` 按竞赛顺序做字段体检、缺失机制、IQR 计数和 1%/99% 缩尾对照，PDF/CSV 原件不动。行业画像和杜邦跟同一套口径，但不套八步顺序：分问题完整个案、中位数带 n、IQR / 730 天 / 缩尾稳健对照。`financial_analysis.py` 默认读 `_csv_255`，营收低于 10 万元是样本筛选，毛利率图截到 [-50%, 80%]。图用新文件名（`financial_analysis_clean.png`），避免 Windows 资源管理器仍显示旧的创建时间。
 
 旧脚本仍用 **OCF>0 且现金净增加>0** 加现金流科目（542 家，5 折 ROC-AUC ≈ 0.62）。那是对照实验，不是信用评级。
 
-`output/analysis/` 已 gitignore。仓库里的文字底稿：`industry_portrait.md`、`dupont_pca.md`、`cash_gap_model.md`。
+`output/analysis/` 已 gitignore。仓库里的文字底稿：`preprocess.md`、`industry_portrait.md`、`dupont_pca.md`、`cash_gap_model.md`。
 
 ## 目录
 
@@ -152,6 +154,8 @@ neeq-financial-data-pipeline/
 ├── financial_analysis.py
 ├── company_metrics.py
 ├── company_metrics_dictionary.md
+├── preprocess.py
+├── preprocess.md
 ├── industry_groups.py
 ├── industry_portrait.py
 ├── industry_portrait.md

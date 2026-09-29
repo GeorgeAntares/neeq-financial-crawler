@@ -348,7 +348,9 @@ def _num(value, digits=3):
 
 def render_report(n, n_pos, dummy_cols, fold_df, summary, coef_df, imp_df, shap_df, prevalence):
     lines = [
-        "# 现金缺口分类（利润为正且 OCF 为负）",
+        "# 附录：现金缺口分类（利润为正且 OCF 为负）",
+        "",
+        "这是附录，不是封面结论。正例大约一成，分类几乎没有信号；主分析看应计利润和营运资金周期。",
         "",
         "标签：净利润 > 0 **且** 经营现金流净额 < 0。分母是两科目都有数字的公司。",
         "特征只用资产负债和利润表比率（截尾列）+ 行业哑变量；**不用 OCF 分项、OCF/收入、净利率、ROE**，避免把标签两半直接喂给模型。",

@@ -5,7 +5,10 @@ from pathlib import Path
 import pandas as pd
 
 from company_metrics import (
+    DAYS_ANOMALY,
+    add_ratios_and_flags,
     build_company_metrics,
+    quality_summary,
     score_equity,
     score_net_profit,
     score_revenue,
@@ -52,6 +55,7 @@ class CompanyMetricsTest(unittest.TestCase):
                     ["存货", 80_000, 70_000],
                     ["资产总计", 1_000_000, 900_000],
                     ["流动负债合计", 250_000, 200_000],
+                    ["应付账款", 50_000, 40_000],
                     ["负债合计", 400_000, 350_000],
                     ["所有者权益（或股东权益）合计", 600_000, 550_000],
                     ["负债和所有者权益（或股东权益）总计", 1_000_000, 900_000],
@@ -98,11 +102,24 @@ class CompanyMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(row["inventory_to_revenue"], 0.08)
         self.assertAlmostEqual(row["ocf_to_revenue"], 0.04)
         self.assertEqual(row["ocf_minus_np"], -60_000)
+        self.assertTrue(row["gm_valid"])
+        self.assertFalse(row["equity_negative"])
+        self.assertTrue(row["roe_valid"])
+        self.assertTrue(row["bs_articulation_ok"])
+        self.assertAlmostEqual(row["bs_rel_gap"], 0.0)
+        self.assertFalse(row["np_truncated"])
+        self.assertEqual(row["ocf_missing_kind"], "present")
+        self.assertEqual(row["inventory_status"], "positive")
+        self.assertAlmostEqual(row["dso"], 120_000 / 1_000_000 * 365)
+        self.assertAlmostEqual(row["dio"], 80_000 / 400_000 * 365)
+        self.assertAlmostEqual(row["dpo"], 50_000 / 400_000 * 365)
+        self.assertAlmostEqual(row["accruals_to_revenue"], 0.06)
+        self.assertFalse(row["dso_anomalous"])
         self.assertAlmostEqual(row["revenue_yoy"], 0.25)
         self.assertAlmostEqual(row["net_profit_yoy"], 1.0)
         self.assertAlmostEqual(row["ocf_yoy"], 1.0)
 
-    def test_drops_tiny_revenue_and_falls_back_to_total_cost(self):
+    def test_drops_tiny_revenue_and_does_not_use_total_cost_for_gm(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             write_csv(
                 temp_dir,
@@ -123,8 +140,12 @@ class CompanyMetricsTest(unittest.TestCase):
             metrics = build_company_metrics(temp_dir)
 
         self.assertEqual(list(metrics["stock_code"]), ["430003"])
-        self.assertEqual(metrics.iloc[0]["cogs"], 200_000)
+        self.assertTrue(pd.isna(metrics.iloc[0]["cogs"]))
+        self.assertEqual(metrics.iloc[0]["total_operating_cost"], 200_000)
         self.assertEqual(metrics.iloc[0]["cost_source"], "营业总成本")
+        self.assertFalse(bool(metrics.iloc[0]["gm_valid"]))
+        self.assertTrue(pd.isna(metrics.iloc[0]["gross_margin"]))
+        self.assertTrue(pd.isna(metrics.iloc[0]["dio"]))
 
     def test_yoy_uses_abs_prior(self):
         series = yoy(pd.Series([10.0, -20.0]), pd.Series([-10.0, -10.0]))
@@ -146,6 +167,133 @@ class CompanyMetricsTest(unittest.TestCase):
         self.assertEqual(score_equity("负债和所有者权益（或股东权益）总计"), 0)
         self.assertEqual(score_equity("所有者权益（或股东权益）："), 0)
         self.assertGreater(score_equity("所有者权益（或股东权益）合计"), score_equity("归属于母公司所有者权益合计"))
+
+    def test_quality_flags_equity_inventory_dso_articulation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            write_csv(
+                temp_dir,
+                "430010_负权益_2025_合并利润表.csv",
+                [
+                    ["一、营业总收入", 500_000, 400_000],
+                    ["其中：营业成本", 200_000, 180_000],
+                    ["五、净利润（净亏损以“－”号填列）", 20_000, 10_000],
+                ],
+                ["项目", "本期金额", "上期金额"],
+            )
+            write_csv(
+                temp_dir,
+                "430010_负权益_2025_合并资产负债表.csv",
+                [
+                    ["资产总计", 100_000, 120_000],
+                    ["负债合计", 180_000, 150_000],
+                    ["所有者权益（或股东权益）合计", -80_000, -30_000],
+                    ["应收账款", 10_000, 8_000],
+                    ["存货", 0, 0],
+                ],
+                ["项目", "期末余额", "期初余额"],
+            )
+            write_csv(
+                temp_dir,
+                "430011_长账期_2025_合并利润表.csv",
+                [
+                    ["一、营业总收入", 500_000, 400_000],
+                    ["其中：营业成本", 300_000, 280_000],
+                    ["五、净利润（净亏损以“－”号填列）", 10_000, 8_000],
+                ],
+                ["项目", "本期金额", "上期金额"],
+            )
+            write_csv(
+                temp_dir,
+                "430011_长账期_2025_合并资产负债表.csv",
+                [
+                    ["资产总计", 2_000_000, 1_800_000],
+                    ["负债合计", 800_000, 700_000],
+                    ["所有者权益（或股东权益）合计", 1_200_000, 1_100_000],
+                    ["应收账款", 1_200_000, 1_000_000],
+                ],
+                ["项目", "期末余额", "期初余额"],
+            )
+            write_csv(
+                temp_dir,
+                "430011_长账期_2025_合并现金流量表.csv",
+                [["经营活动产生的现金流量净额", -5_000, 2_000]],
+                ["项目", "本期金额", "上期金额"],
+            )
+            write_csv(
+                temp_dir,
+                "430012_勾稽_2025_合并利润表.csv",
+                [["一、营业总收入", 500_000, 400_000], ["其中：营业成本", 200_000, 180_000]],
+                ["项目", "本期金额", "上期金额"],
+            )
+            write_csv(
+                temp_dir,
+                "430012_勾稽_2025_合并资产负债表.csv",
+                [
+                    ["资产总计", 1_000_000, 900_000],
+                    ["负债合计", 100_000, 90_000],
+                    ["所有者权益（或股东权益）合计", 100_000, 90_000],
+                ],
+                ["项目", "期末余额", "期初余额"],
+            )
+            metrics = build_company_metrics(temp_dir)
+
+        by_code = metrics.set_index("stock_code")
+        neg = by_code.loc["430010"]
+        self.assertTrue(bool(neg["equity_negative"]))
+        self.assertFalse(bool(neg["roe_valid"]))
+        self.assertTrue(pd.isna(neg["roe"]))
+        self.assertTrue(pd.isna(neg["equity_multiplier"]))
+        self.assertEqual(neg["inventory_status"], "zero")
+        self.assertAlmostEqual(neg["dio"], 0.0)
+        self.assertFalse(bool(neg["np_truncated"]))
+        self.assertEqual(neg["ocf_missing_kind"], "no_statement")
+
+        long_ar = by_code.loc["430011"]
+        self.assertGreater(long_ar["dso"], DAYS_ANOMALY)
+        self.assertTrue(bool(long_ar["dso_anomalous"]))
+        self.assertEqual(long_ar["inventory_status"], "missing")
+        self.assertTrue(pd.isna(long_ar["dio"]))
+        self.assertAlmostEqual(long_ar["accruals_to_revenue"], (10_000 - (-5_000)) / 500_000)
+
+        broken = by_code.loc["430012"]
+        self.assertFalse(bool(broken["bs_articulation_ok"]))
+        self.assertGreater(broken["bs_rel_gap"], 0.5)
+        self.assertTrue(bool(broken["np_truncated"]))
+
+        summary = quality_summary(metrics).set_index("flag")
+        self.assertEqual(int(summary.loc["equity_negative", "n"]), 1)
+        self.assertEqual(int(summary.loc["dso_anomalous", "n"]), 1)
+        self.assertEqual(int(summary.loc["inventory_zero", "n"]), 1)
+        self.assertEqual(int(summary.loc["inventory_missing", "n"]), 2)
+        self.assertEqual(int(summary.loc["bs_articulation_fail", "n"]), 1)
+
+    def test_add_ratios_and_flags_on_wide_frame(self):
+        frame = pd.DataFrame({
+            "stock_code": ["1"],
+            "year": ["2025"],
+            "revenue": [1_000_000.0],
+            "cogs": [400_000.0],
+            "total_operating_cost": [700_000.0],
+            "net_profit": [100_000.0],
+            "total_assets": [1_000_000.0],
+            "total_assets_begin": [1_000_000.0],
+            "total_liabilities": [400_000.0],
+            "equity": [600_000.0],
+            "equity_begin": [600_000.0],
+            "equity_item": ["所有者权益（或股东权益）合计"],
+            "current_assets": [500_000.0],
+            "current_liabilities": [250_000.0],
+            "accounts_receivable": [100_000.0],
+            "inventory": [50_000.0],
+            "accounts_payable": [40_000.0],
+            "ocf": [80_000.0],
+            "cashflow_n_rows": [3],
+        })
+        out = add_ratios_and_flags(frame).iloc[0]
+        self.assertTrue(out["gm_valid"])
+        self.assertTrue(out["bs_articulation_ok"])
+        self.assertAlmostEqual(out["ccc"], out["dso"] + out["dio"] - out["dpo"])
+        self.assertAlmostEqual(out["accruals_to_revenue"], 0.02)
 
     def test_main_guard_present(self):
         text = Path(__file__).resolve().parents[1].joinpath("company_metrics.py").read_text(encoding="utf-8")
