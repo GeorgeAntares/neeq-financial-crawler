@@ -67,6 +67,8 @@ CORR_LABELS = {
 }
 
 CHART_NAME = "dupont_pca.png"
+FACTORS_CHART = "dupont_factors.png"
+SPEARMAN_CHART = "dupont_spearman.png"
 REPORT_NAME = "dupont_pca.md"
 IDENTITY_NAME = "dupont_check.csv"
 INDUSTRY_DUPONT_NAME = "dupont_industry.csv"
@@ -584,45 +586,125 @@ def _save_fig(path, fig):
     plt.close(fig)
 
 
-def plot_figures(corr, load_df, var_df, output_dir):
+def _mpl():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
     matplotlib.rcParams["axes.unicode_minus"] = False
+    return plt
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 
-    if corr is not None and not corr.empty:
-        im = axes[0].imshow(corr.to_numpy(), cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
-        labels = [CORR_LABELS.get(col, col) for col in corr.columns]
-        axes[0].set_xticks(range(len(labels)), labels, rotation=90, fontsize=8)
-        axes[0].set_yticks(range(len(labels)), labels, fontsize=8)
-        axes[0].set_title("Spearman 相关阵", fontweight="bold")
-        fig.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04)
+def factor_bar_frame(industry_df):
+    """NM / turnover / leverage medians; NaN when n=0, never filled with 0."""
+    cols = [
+        "industry",
+        "n",
+        "median_net_margin",
+        "median_asset_turnover",
+        "median_equity_multiplier",
+        "median_roe",
+    ]
+    have = [c for c in cols if c in industry_df.columns]
+    out = industry_df[have].copy()
+    for col in have:
+        if col != "industry":
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    value_cols = [c for c in have if c not in ("industry", "n")]
+    if "n" in out.columns and value_cols:
+        out.loc[out["n"].fillna(0) <= 0, value_cols] = np.nan
+    return out
+
+
+def _factors_title(frame):
+    mfg = frame[frame["industry"] == GROUP_MANUFACTURING]
+    sw = frame[frame["industry"] == GROUP_SOFTWARE]
+    if mfg.empty or sw.empty:
+        return "杜邦三因子行业中位数（有效 ROE 完整个案）"
+    mfg_roe = float(mfg.iloc[0]["median_roe"]) if "median_roe" in mfg.columns else np.nan
+    sw_roe = float(sw.iloc[0]["median_roe"]) if "median_roe" in sw.columns else np.nan
+    mfg_nm = float(mfg.iloc[0]["median_net_margin"]) if "median_net_margin" in mfg.columns else np.nan
+    sw_nm = float(sw.iloc[0]["median_net_margin"]) if "median_net_margin" in sw.columns else np.nan
+    if np.isfinite(mfg_roe) and np.isfinite(sw_roe) and mfg_roe > sw_roe:
+        if np.isfinite(mfg_nm) and np.isfinite(sw_nm) and mfg_nm > sw_nm:
+            return "制造 ROE 高于软件，差在净利率不是周转"
+        return "制造 ROE 中位数高于软件"
+    return "杜邦三因子行业中位数（有效 ROE 完整个案）"
+
+
+def plot_dupont_factors(industry_df, output_dir):
+    if industry_df is None or industry_df.empty:
+        return None
+    plt = _mpl()
+    frame = factor_bar_frame(industry_df)
+    industries = frame["industry"].tolist()
+    x = np.arange(len(industries))
+    width = 0.25
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    nm = pd.to_numeric(frame.get("median_net_margin"), errors="coerce") * 100
+    at = pd.to_numeric(frame.get("median_asset_turnover"), errors="coerce")
+    em = pd.to_numeric(frame.get("median_equity_multiplier"), errors="coerce")
+    ax.bar(x - width, nm.to_numpy(dtype=float), width, label="净利率 (%)", color="#4c78a8")
+    ax.bar(x, at.to_numpy(dtype=float), width, label="总资产周转", color="#f58518")
+    ax.bar(x + width, em.to_numpy(dtype=float), width, label="权益乘数", color="#54a24b")
+    ax.set_xticks(x, industries)
+    ax.set_title(_factors_title(frame), fontsize=11, fontweight="bold")
+    ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = os.path.join(output_dir, FACTORS_CHART)
+    _save_fig(path, fig)
+    return path
+
+
+def plot_spearman(corr, output_dir):
+    if corr is None or corr.empty:
+        return None
+    plt = _mpl()
+    fig, ax = plt.subplots(figsize=(7.5, 6.5))
+    im = ax.imshow(corr.to_numpy(), cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    labels = [CORR_LABELS.get(col, col) for col in corr.columns]
+    ax.set_xticks(range(len(labels)), labels, rotation=90, fontsize=8)
+    ax.set_yticks(range(len(labels)), labels, fontsize=8)
+    roe_nm = np.nan
+    if "roe" in corr.index and "net_margin" in corr.columns:
+        roe_nm = float(corr.loc["roe", "net_margin"])
+    if np.isfinite(roe_nm):
+        ax.set_title(f"ROE 与净利率 Spearman {roe_nm:.2f}（完整个案相关阵）", fontweight="bold")
+    else:
+        ax.set_title("截面指标 Spearman 相关阵（完整个案）", fontweight="bold")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    path = os.path.join(output_dir, SPEARMAN_CHART)
+    _save_fig(path, fig)
+    return path
+
+
+def plot_figures(corr, load_df, var_df, output_dir):
+    plt = _mpl()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    if var_df is not None and not var_df.empty:
+        axes[0].bar(var_df["component"].head(6), var_df["explained_ratio"].head(6) * 100, color="#4c78a8")
+        axes[0].plot(var_df["component"].head(6), var_df["cumulative"].head(6) * 100, color="#f58518", marker="o")
+        axes[0].set_ylabel("%")
+        pc1 = float(var_df.iloc[0]["explained_ratio"]) * 100 if len(var_df) else np.nan
+        axes[0].set_title(f"PC1 解释 {pc1:.0f}% 方差（附录主成分）", fontweight="bold")
     else:
         axes[0].set_visible(False)
 
-    if not var_df.empty:
-        axes[1].bar(var_df["component"].head(6), var_df["explained_ratio"].head(6) * 100, color="#4c78a8")
-        axes[1].plot(var_df["component"].head(6), var_df["cumulative"].head(6) * 100, color="#f58518", marker="o")
-        axes[1].set_ylabel("%")
-        axes[1].set_title("方差解释（柱）与累计（线）", fontweight="bold")
-    else:
-        axes[1].set_visible(False)
-
-    pc_cols = [c for c in ["PC1", "PC2", "PC3"] if c in load_df.columns]
-    if pc_cols and not load_df.empty:
+    pc_cols = [c for c in ["PC1", "PC2", "PC3"] if load_df is not None and c in load_df.columns]
+    if pc_cols and load_df is not None and not load_df.empty:
         mat = load_df[pc_cols].to_numpy()
         vmax = np.nanmax(np.abs(mat)) or 1.0
-        im2 = axes[2].imshow(mat, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
-        axes[2].set_xticks(range(len(pc_cols)), pc_cols)
-        axes[2].set_yticks(range(len(load_df)), list(load_df["label"]), fontsize=8)
-        axes[2].set_title("PCA 载荷", fontweight="bold")
-        fig.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+        im2 = axes[1].imshow(mat, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+        axes[1].set_xticks(range(len(pc_cols)), pc_cols)
+        axes[1].set_yticks(range(len(load_df)), list(load_df["label"]), fontsize=8)
+        axes[1].set_title("PCA 载荷：规模 / 杠杆 / 现金", fontweight="bold")
+        fig.colorbar(im2, ax=axes[1], fraction=0.046, pad=0.04)
     else:
-        axes[2].set_visible(False)
+        axes[1].set_visible(False)
 
     fig.tight_layout()
     path = os.path.join(output_dir, CHART_NAME)
@@ -680,14 +762,25 @@ def main(metrics_path=None, output_dir=None, report_path=None, pdf_dir=None):
         with open(report_path, "w", encoding="utf-8") as handle:
             handle.write(report)
 
-    chart_path = plot_figures(corr, load_df, var_df, output_dir)
+    chart_path = None
+    try:
+        factor_path = plot_dupont_factors(industry_df, output_dir)
+        spearman_path = plot_spearman(corr, output_dir)
+        chart_path = plot_figures(corr, load_df, var_df, output_dir)
+        if factor_path:
+            print(f"wrote {factor_path}")
+        if spearman_path:
+            print(f"wrote {spearman_path}")
+    except Exception as exc:
+        print(f"dupont charts skipped: {exc}")
     print(f"dupont n={identity['n']} max|gap|={identity['max_abs_gap']:.3e} match={identity['n_match']}")
     print(industry_df.to_string(index=False))
     print(f"pca n={len(complete)}")
     if not var_df.empty:
         print(var_df.head(3).to_string(index=False))
     print(f"wrote {md_path}")
-    print(f"wrote {chart_path}")
+    if chart_path:
+        print(f"wrote {chart_path}")
     if report_path:
         print(f"wrote {report_path}")
     return var_df

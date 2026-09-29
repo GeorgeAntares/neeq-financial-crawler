@@ -21,7 +21,7 @@ Crawl NEEQ (and optionally CNINFO) annual-report PDFs, parse the three primary f
 - Three-tier PDF parser: pdfplumber → PyMuPDF → RapidOCR
 - Text-layer start-page detection (skip MD&A / audit covers; drop footnote columns)
 - Export consolidated balance sheet, income statement, and cash-flow statement as CSV
-- Company-level ratios, three-group industry portraits, DuPont/PCA, firm report cards, and a cash-gap classifier (profit>0 and OCF<0)
+- Company-level ratios, three-group industry portraits, DuPont/PCA, firm report cards with one-question charts, and a cash-gap classifier (profit>0 and OCF<0)
 
 Default data source is **NEEQ**. Pass `--source cninfo` for the CNINFO (巨潮) path.
 
@@ -118,7 +118,7 @@ On the current-parser ~255 CSV set (first consolidated block only, revenue ≥ 1
 - Working capital is complete-case by question. Headline software DSO 179 days (n=24) vs manufacturing 105 (n=80); dropping IQR outliers flips it to 97 vs 102 — the long cycle is a right tail. Manufacturing DIO is only slightly higher (113 vs 100). Software is missing an inventory *row* in 23% of firms, not reporting inventory of zero.
 - Earnings quality: median (NI − OCF)/revenue −4.5% (n=109). Among firms with both items, 21 have NI<0 and OCF>0 vs 12 with NI>0 and OCF<0. Manufacturing / software accrual medians do not move after IQR.
 - Industry DuPont (109 valid-ROE firms): manufacturing 4.4%, software 0.5%, driven by net margin. After IQR the gap remains (5.9% vs 2.6%). After freezing negative equity, Spearman(ROE, net margin) is 0.90.
-- Firm report cards (four sections: profitability, earnings quality, solvency/trap, current-year operating/cash). Extra first-block lines: cash 173/195, sales cash 158/195, operating profit 126/195. Most common flags: weak interest cover (54/107) and low cash conversion in manufacturing (21/90). Cash-and-debt-high, other receivables, and goodwill rarely trigger.
+- Firm report cards (four sections: profitability, earnings quality, solvency/trap, current-year operating/cash). Extra first-block lines: cash 173/195, sales cash 158/195, operating profit 126/195. Most common flags: weak interest cover (54/107) and low cash conversion in manufacturing (21/90). Cash-and-debt-high, other receivables, and goodwill rarely trigger. Cross-section charts: P&L waterfall, OCF/ICF/FCF bars, DuPont three-factor, named peer bars, flag color table (one question per figure; missing stays missing).
 - Appendix: the 12-positive cash-gap classifier has little signal (logit ROC 0.53). The older “OCF>0 and cash increase>0” scripts remain a control.
 
 ```bash
@@ -127,7 +127,7 @@ python preprocess.py              # field exam, missing mechanism, IQR, before/a
 python industry_portrait.py
 python dupont_pca.py
 python cash_gap_model.py          # needs scikit-learn; shap optional
-python report_card.py             # firm-level four-section cards
+python report_card.py             # firm-level four-section cards + charts
 python financial_analysis.py --csv-dir output/analysis/_csv_255
 python ml_financial_health.py     # control: OCF>0 and cash increase>0
 python ml_evaluation.py
@@ -166,6 +166,7 @@ neeq-financial-data-pipeline/
 ├── cash_gap_model.py
 ├── cash_gap_model.md
 ├── report_card.py
+├── report_charts.py
 ├── company_report_cards.md
 ├── ANALYSIS_REPORT.md
 ├── ANALYSIS_README.md

@@ -57,6 +57,8 @@ COMPARE_FIELDS = [
     "net_margin",
     "operating_margin",
     "roe",
+    "asset_turnover",
+    "equity_multiplier",
     "core_profit_ratio",
     "sga_to_revenue",
     "accruals_to_revenue",
@@ -142,6 +144,8 @@ def coverage_table(labeled):
         ("rd_expense", "研发费用", "怎么赚钱"),
         ("interest_expense", "利息费用", "偿债"),
         ("sales_cash", "销售商品收现", "利润真不真"),
+        ("icf", "投资活动净额", "营运与现金"),
+        ("fcf", "筹资活动净额", "营运与现金"),
         ("contract_liabilities", "合同负债", "利润真不真"),
         ("cash_conversion", "收现率", "利润真不真"),
         ("core_profit_ratio", "本业比", "怎么赚钱"),
@@ -351,6 +355,8 @@ def render_card(row, medians=None):
         "",
         "单期年报没有三年毛利率/净利率波动，可持续性只能看到当年周转和同比。",
         "",
+        "同目录图（缺科目跳过该柱，不用 0 填）：利润瀑布、现金流三分类、杜邦三因子、同行毛利率、红旗色块、当期 KPI。",
+        "",
         "## 红旗",
         "",
     ]
@@ -412,7 +418,8 @@ def render_index(labeled, coverage, flags, medians, examples):
         "存贷双高、其他应收、商誉、本业比、收现率、利息保障只在科目齐全时评价。",
         "",
         "复现：`python company_metrics.py` 然后 `python report_card.py`。",
-        "单家 markdown 在 `output/analysis/report_cards/`。",
+        "单家 markdown 与截面图在 `output/analysis/report_cards/`（gitignored）。",
+        "一张图一个问题：利润瀑布、现金流三分类、杜邦三因子、同行条形、红旗色块；图题写成结论。",
         "",
         "## 科目覆盖",
         "",
@@ -464,6 +471,9 @@ def render_index(labeled, coverage, flags, medians, examples):
         f"- 利息保障：营业利润 / 利息费用，利息费用 ≤ 0 或缺失则为缺。",
         f"- 收现率：销售商品、提供劳务收到的现金 / 营收。",
         f"- 商誉空单元格保持缺失，不记 0。",
+        f"- 投资 / 筹资净额来自首块现金流量表；缺行不记 0，三分类柱只画有数的类。",
+        f"- 利润瀑布的「税及其他」是营业利润到净利润的残差（未抽所得税，也没有扣非）。",
+        f"- 同行条形取同行业、该指标齐全、对数营收最近的 5–8 家；本公司蓝色，同行灰色。",
         "",
         "## 局限",
         "",
@@ -473,6 +483,16 @@ def render_index(labeled, coverage, flags, medians, examples):
         "",
     ]
     return "\n".join(lines)
+
+
+def _flag_rate_title(flags):
+    total = flags[(flags["flag"] != "firms") & (flags["industry"] == "合计")]
+    if total.empty:
+        total = flags[flags["flag"] != "firms"]
+    if total.empty:
+        return "报告卡红旗占比"
+    top = total.sort_values("n_flag", ascending=False).iloc[0]
+    return f"最常见红旗是{top['label']}（{int(top['n_flag'])}/{int(top['n_evaluated'])}）"
 
 
 def plot_flag_rates(flags, output_dir):
@@ -491,7 +511,7 @@ def plot_flag_rates(flags, output_dir):
         fig, ax = plt.subplots(figsize=(8, 4.5))
         ax.barh(work["label"], work["share_of_group"] * 100, color="#4c78a8")
         ax.set_xlabel("占样本 %")
-        ax.set_title("报告卡红旗占比")
+        ax.set_title(_flag_rate_title(flags))
         fig.tight_layout()
         path = os.path.join(output_dir, FLAGS_CHART)
         fig.savefig(path, dpi=120)
@@ -515,7 +535,7 @@ def plot_flag_rates(flags, output_dir):
         ax.bar(x + (i - 1) * width, vals, width, label=industry, color=colors[i % len(colors)])
     ax.set_xticks(x, labels, rotation=20, ha="right")
     ax.set_ylabel("占该行业 %")
-    ax.set_title("报告卡红旗占比（分行业）")
+    ax.set_title(_flag_rate_title(flags))
     ax.legend()
     fig.tight_layout()
     path = os.path.join(output_dir, FLAGS_CHART)
@@ -547,7 +567,7 @@ def load_or_build_metrics(metrics_path, csv_dir):
     return build_company_metrics(csv_dir or default_csv_dir())
 
 
-def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_path=None, write_firms=True):
+def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_path=None, write_firms=True, write_charts=True):
     output_dir = output_dir or OUTPUT_DIR_DEFAULT
     pdf_dir = pdf_dir or PDF_DIR_DEFAULT
     os.makedirs(output_dir, exist_ok=True)
@@ -577,6 +597,8 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
             "revenue",
             "net_profit",
             "ocf",
+            "icf",
+            "fcf",
             "gross_margin",
             "operating_margin",
             "net_margin",
@@ -621,14 +643,30 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
             handle.write(report)
 
     n_cards = 0
+    cards_dir = os.path.join(output_dir, CARDS_DIRNAME)
     if write_firms:
-        n_cards = write_firm_cards(labeled, medians, os.path.join(output_dir, CARDS_DIRNAME))
+        n_cards = write_firm_cards(labeled, medians, cards_dir)
 
     chart = None
+    n_chart_firms = 0
     try:
         chart = plot_flag_rates(flags, output_dir)
     except Exception as exc:
         print(f"flag chart skipped: {exc}")
+    if write_charts:
+        try:
+            from report_charts import plot_example_flag_grid, write_firm_charts
+
+            example_codes = [str(row.get("stock_code")) for _, row in examples]
+            codes = None if write_firms else example_codes
+            n_chart_firms = write_firm_charts(labeled, medians, cards_dir, FLAG_LABELS, codes=codes)
+            grid = plot_example_flag_grid(
+                examples, os.path.join(output_dir, "company_report_card_flag_grid.png"), FLAG_LABELS
+            )
+            if grid:
+                print(f"wrote {grid}")
+        except Exception as exc:
+            print(f"firm charts skipped: {exc}")
 
     print("coverage:")
     for _, row in coverage.iterrows():
@@ -641,7 +679,9 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
     print(f"wrote {flag_path}")
     print(f"wrote {md_path}")
     if n_cards:
-        print(f"wrote {n_cards} firm cards under {os.path.join(output_dir, CARDS_DIRNAME)}")
+        print(f"wrote {n_cards} firm cards under {cards_dir}")
+    if n_chart_firms:
+        print(f"wrote charts for {n_chart_firms} firms under {cards_dir}")
     if chart:
         print(f"wrote {chart}")
     if report_path:
@@ -657,6 +697,7 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", default=None, help="Charts and tables")
     parser.add_argument("--report", default=None, help="Optional extra markdown path")
     parser.add_argument("--no-firm-files", action="store_true", help="Skip per-firm markdown files")
+    parser.add_argument("--no-firm-charts", action="store_true", help="Skip per-firm png charts")
     args = parser.parse_args()
     main(
         metrics_path=args.metrics,
@@ -665,4 +706,5 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         report_path=args.report,
         write_firms=not args.no_firm_files,
+        write_charts=not args.no_firm_charts,
     )

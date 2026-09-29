@@ -9,6 +9,7 @@ from dupont_pca import (
     dupont_coverage,
     dupont_factor_assoc,
     dupont_identity,
+    factor_bar_frame,
     fit_pca,
     industry_dupont_sensitivity,
     industry_dupont_table,
@@ -151,6 +152,31 @@ class DupontPcaTest(unittest.TestCase):
         self.assertTrue(np.isfinite(df.loc[0, "log_revenue"]))
         self.assertTrue(np.isnan(df.loc[1, "log_revenue"]))
         self.assertTrue(np.isnan(df.loc[1, "log_assets"]))
+
+    def test_factor_bar_frame_keeps_nan_for_empty_industry(self):
+        table = pd.DataFrame([
+            {
+                "industry": "制造",
+                "n": 45,
+                "median_net_margin": 0.032,
+                "median_asset_turnover": 0.694,
+                "median_equity_multiplier": 2.054,
+                "median_roe": 0.044,
+            },
+            {
+                "industry": "软件信息",
+                "n": 0,
+                "median_net_margin": np.nan,
+                "median_asset_turnover": np.nan,
+                "median_equity_multiplier": np.nan,
+                "median_roe": np.nan,
+            },
+        ])
+        frame = factor_bar_frame(table)
+        sw = frame[frame["industry"] == "软件信息"].iloc[0]
+        self.assertTrue(np.isnan(sw["median_net_margin"]))
+        self.assertTrue(np.isnan(sw["median_roe"]))
+        self.assertAlmostEqual(float(frame[frame["industry"] == "制造"].iloc[0]["median_roe"]), 0.044)
 
     def test_main_guard_present(self):
         text = Path(__file__).resolve().parents[1].joinpath("dupont_pca.py").read_text(encoding="utf-8")
