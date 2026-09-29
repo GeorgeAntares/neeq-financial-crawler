@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/GeorgeAntares/neeq-financial-data-pipeline/actions/workflows/test.yml"><img src="https://github.com/GeorgeAntares/neeq-financial-data-pipeline/actions/workflows/test.yml/badge.svg" alt="tests"></a>
-  <img src="https://img.shields.io/badge/Version-0.2.0-blue?logo=git&logoColor=white" alt="Version">
+  <img src="https://img.shields.io/badge/Version-0.3.0-blue?logo=git&logoColor=white" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.9+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
 </p>
@@ -21,7 +21,7 @@ Crawl NEEQ (and optionally CNINFO) annual-report PDFs, parse the three primary f
 - Three-tier PDF parser: pdfplumber → PyMuPDF → RapidOCR
 - Text-layer start-page detection (skip MD&A / audit covers; drop footnote columns)
 - Export consolidated balance sheet, income statement, and cash-flow statement as CSV
-- Company-level ratios, three-group industry portraits, DuPont/PCA, firm report cards with one-question charts, and a cash-gap classifier (profit>0 and OCF<0)
+- Company-level ratios, three-group industry portraits, DuPont/PCA, one-pager firm cards, and a cash-gap classifier (profit>0 and OCF<0)
 
 Default data source is **NEEQ**. Pass `--source cninfo` for the CNINFO (巨潮) path.
 
@@ -110,7 +110,7 @@ On a 36-PDF stratified sample after the locator fix: **100%** had at least one u
 
 ## Analysis and models
 
-Full write-up: [`ANALYSIS_REPORT.md`](ANALYSIS_REPORT.md). Metric formulas: [`company_metrics_dictionary.md`](company_metrics_dictionary.md).
+Full write-up: [`ANALYSIS_REPORT.md`](ANALYSIS_REPORT.md). Metric formulas: [`company_metrics_dictionary.md`](company_metrics_dictionary.md). Next axes: [`ROADMAP.md`](ROADMAP.md).
 
 On the current-parser ~255 CSV set (first consolidated block only, revenue ≥ 100,000 CNY). **Preprocessing is four layers**, not one filter: parse truncation, the revenue floor, statement-quality flags, then winsorizing.
 
@@ -141,7 +141,7 @@ python csv_to_pdf.py
 
 The older “financial health” scripts still use **OCF>0 and net cash increase>0** with cash-flow line items (542 firms, 5-fold ROC-AUC ≈ 0.62). That is a control experiment, not a credit rating.
 
-Outputs under `output/analysis/` are gitignored. Committed notes: `preprocess.md`, `industry_portrait.md`, `dupont_pca.md`, `cash_gap_model.md`, `company_report_cards.md`.
+Outputs under `output/analysis/` are gitignored. Committed notes: `preprocess.md`, `industry_portrait.md`, `dupont_pca.md`, `cash_gap_model.md`, `company_report_cards.md`, `ROADMAP.md`.
 
 ## Layout
 
@@ -169,9 +169,11 @@ neeq-financial-data-pipeline/
 ├── report_card.py
 ├── report_charts.py
 ├── chart_catalog.py
+├── chart_theme.py
 ├── company_report_cards.md
 ├── ANALYSIS_REPORT.md
 ├── ANALYSIS_README.md
+├── ROADMAP.md
 ├── ml_financial_health.py
 ├── ml_evaluation.py
 ├── shap_analysis.py
@@ -205,7 +207,7 @@ CI runs the same command on Python 3.11 (without installing `torch`).
 - A few scanned / image-only statements still need RapidOCR; without it those tables are skipped
 - Footnotes can still leak into a statement; analysis prefers primary rows and skips `其中：` lines
 - On-disk CSVs are a mix of parser generations until you re-export
-- Analysis is a single-year cross-section, manufacturing-heavy, with no default labels
+- Analysis is a single-year cross-section, manufacturing-heavy, with no default labels; next choices are in [`ROADMAP.md`](ROADMAP.md)
 - OCR is ~1–2 s/page
 
 ## License
