@@ -5,6 +5,20 @@ All notable changes follow Semantic Versioning and Keep a Changelog.
 
 ## [Unreleased]
 
+### Changed / 变更
+
+- 报表预处理改为质量标记，而不是再筛一批公司：资产负债表勾稽、毛利只认营业成本、负权益冻结 ROE/乘数、存货 0 与缺行分开、净利润截断 vs 无表、DSO/DIO/DPO 超过 730 天打帽 / Statement preprocessing is now quality flags (BS articulation, COGS-only gross margin, freeze ROE on non-positive equity, inventory 0 vs missing, truncation vs absent statement, DSO/DIO/DPO caps at 730 days)
+- 行业分析改为营运资金周期（DSO/DIO/DPO/CCC）和应计利润；12 例「利润为正且 OCF 为负」分类降为附录 / Industry write-up is the working-capital cycle and accruals; the 12-positive cash-gap classifier is an appendix
+- 杜邦改为分行业 ROE 分解（净利率 / 周转 / 杠杆）；恒等式和 PCA 作为核对与结构附录 / DuPont is an industry ROE decomposition; the identity check and PCA are supporting
+- `financial_analysis.py` 默认 CSV 目录与公司指标库对齐为 `output/analysis/_csv_255` / Descriptive stats default to the same `_csv_255` folder as company metrics
+- 行业画像与杜邦按竞赛口径重做：分问题完整个案、每个中位数带 n、IQR / 730 天 / 缩尾稳健对照；分析章节不套用八步顺序。软件 DSO 主口径长于制造，去掉 IQR 后方向会翻 / Industry portraits and DuPont now use contest-style caliber (complete-case by question, n per median, IQR / 730-day / winsor robustness) without forcing the eight-step order. Headline software DSO is longer than manufacturing; the ranking flips after dropping IQR outliers
+
+### Added / 新增
+
+- `company_metrics_quality.csv` 以及 DSO、DIO、DPO、现金周期、应计/收入列 / Quality-flag summary plus DSO, DIO, DPO, CCC, and accruals-to-revenue
+- `preprocess.py`：竞赛顺序的字段体检、缺失机制表、IQR 离群计数、1%/99% 缩尾对照、Z-score/Min-Max 副本和处理前后图 / Contest-style preprocess log: field exam, missing-mechanism table, IQR outlier counts, winsorize comparison, scaling copy, before/after chart
+- 行业覆盖表、稳健表与对照图：`industry_coverage.csv` / `industry_sensitivity.csv` / `industry_sensitivity.png`，杜邦 `dupont_coverage.csv` / `dupont_sensitivity.csv` / Coverage and robustness tables for industry portraits and DuPont
+
 ## [v0.2.0] - 2026-09-24
 
 解析器定位与附注列修复之后，分析从描述统计扩到公司级指标、行业画像、杜邦/PCA 和现金缺口分类。默认数据源改为 NEEQ，并加上 GitHub Actions。

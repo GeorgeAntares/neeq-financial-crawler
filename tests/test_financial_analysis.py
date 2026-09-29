@@ -6,8 +6,10 @@ from financial_analysis import (
     MIN_REVENUE_CNY,
     clip_gross_margin,
     filter_plausible_revenue,
+    is_missing_token,
     pick_operating_cost,
     pick_primary_row,
+    to_numeric_safe,
 )
 
 
@@ -34,6 +36,15 @@ class FinancialAnalysisCleanTest(unittest.TestCase):
         by_code = cost.set_index('stock_code')['value']
         self.assertEqual(by_code['a'], 100)
         self.assertEqual(by_code['b'], 50)
+
+    def test_missing_tokens_become_nan_negatives_stay(self):
+        self.assertTrue(is_missing_token("--"))
+        self.assertTrue(is_missing_token("未知"))
+        self.assertTrue(is_missing_token("  "))
+        self.assertTrue(pd.isna(to_numeric_safe("--")))
+        self.assertTrue(pd.isna(to_numeric_safe("—")))
+        self.assertAlmostEqual(to_numeric_safe("-123.5"), -123.5)
+        self.assertAlmostEqual(to_numeric_safe("1,000"), 1000.0)
 
     def test_clips_gross_margin_extremes(self):
         s = pd.Series([-4000.0, 21.0, 200.0])

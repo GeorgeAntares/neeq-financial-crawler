@@ -5,6 +5,8 @@ import os
 import numpy as np
 import pandas as pd
 
+from financial_analysis import to_numeric_safe
+
 FEATURE_ITEMS = {
     'sales_cash': ['销售商品、提供劳务收到的现金'],
     'tax_refund': ['收到的税费返还'],
@@ -26,18 +28,6 @@ FEATURE_COLS_MODEL = [
     'icf',
     'fcf',
 ]
-
-
-def to_numeric_safe(value):
-    if pd.isna(value) or value is None:
-        return np.nan
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).replace(',', '').replace('%', '').replace('"', '').strip()
-    try:
-        return float(text)
-    except ValueError:
-        return np.nan
 
 
 def extract_features(csv_dir):

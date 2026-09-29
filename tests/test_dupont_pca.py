@@ -6,9 +6,12 @@ import pandas as pd
 
 from dupont_pca import (
     add_size_logs,
+    dupont_coverage,
     dupont_factor_assoc,
     dupont_identity,
     fit_pca,
+    industry_dupont_sensitivity,
+    industry_dupont_table,
     log_variance_shares,
     spearman_matrix,
     standardize,
@@ -84,6 +87,64 @@ class DupontPcaTest(unittest.TestCase):
         })
         assoc = dupont_factor_assoc(df).set_index("factor")
         self.assertAlmostEqual(assoc.loc["net_margin", "spearman_with_roe"], 1.0)
+
+    def test_industry_dupont_uses_valid_roe_only(self):
+        df = pd.DataFrame({
+            "industry": ["制造", "制造", "软件信息", "软件信息"],
+            "net_margin": [0.10, 0.08, 0.02, 0.01],
+            "asset_turnover": [1.0, 1.0, 0.5, 0.5],
+            "equity_multiplier": [2.0, 2.0, 2.0, 2.0],
+            "roe": [0.20, 0.16, 0.02, 0.01],
+            "dupont_product": [0.20, 0.16, 0.02, 0.01],
+            "roe_valid": [True, True, True, False],
+        })
+        table = industry_dupont_table(df).set_index("industry")
+        self.assertEqual(int(table.loc["制造", "n"]), 2)
+        self.assertEqual(int(table.loc["软件信息", "n"]), 1)
+        self.assertAlmostEqual(table.loc["制造", "median_roe"], 0.18)
+        self.assertAlmostEqual(table.loc["制造", "product_of_medians"], 0.09 * 1.0 * 2.0)
+
+    def test_dupont_coverage_counts_frozen_roe(self):
+        df = pd.DataFrame({
+            "revenue": [1e8, 2e8, 3e8],
+            "net_profit": [10.0, np.nan, 20.0],
+            "np_truncated": [False, True, False],
+            "equity_negative": [False, False, True],
+            "roe": [0.10, np.nan, np.nan],
+            "roe_valid": [True, False, False],
+            "net_margin": [0.05, np.nan, 0.02],
+            "asset_turnover": [1.0, 1.0, 1.0],
+            "equity_multiplier": [2.0, 2.0, np.nan],
+        })
+        cov = dupont_coverage(df).set_index("item")
+        self.assertEqual(int(cov.loc["有效营收", "n"]), 3)
+        self.assertEqual(int(cov.loc["有净利润", "n"]), 2)
+        self.assertEqual(int(cov.loc["权益非正冻结", "n"]), 1)
+        self.assertEqual(int(cov.loc["有效 ROE", "n"]), 1)
+        self.assertEqual(int(cov.loc["四项齐全", "n"]), 1)
+
+    def test_dupont_sensitivity_drops_roe_iqr(self):
+        roe = [0.04] * 8 + [0.05] * 7 + [0.40]
+        n = len(roe)
+        df = pd.DataFrame({
+            "industry": ["制造"] * n,
+            "net_margin": [0.02] * n,
+            "asset_turnover": [1.0] * n,
+            "equity_multiplier": [2.0] * n,
+            "roe": roe,
+            "dupont_product": roe,
+            "roe_valid": [True] * n,
+            "roe_w": roe,
+            "net_margin_w": [0.02] * n,
+            "asset_turnover_w": [1.0] * n,
+            "equity_multiplier_w": [2.0] * n,
+        })
+        sens = industry_dupont_sensitivity(df)
+        quality = sens[(sens["treatment"] == "quality") & (sens["industry"] == "制造")].iloc[0]
+        iqr = sens[(sens["treatment"] == "iqr") & (sens["industry"] == "制造")].iloc[0]
+        self.assertEqual(int(quality["n"]), 16)
+        self.assertEqual(int(iqr["n"]), 15)
+        self.assertLess(float(iqr["median_roe"]), float(quality["median_roe"]))
 
     def test_add_size_logs_skips_nonpositive(self):
         df = add_size_logs(pd.DataFrame({"revenue": [100.0, 0.0], "avg_assets": [50.0, -1.0]}))
