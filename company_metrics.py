@@ -79,6 +79,8 @@ AMOUNT_COLS = [
     "interest_expense",
     "non_operating_income",
     "sales_cash",
+    "icf",
+    "fcf",
     "st_interest_bearing",
     "customer_advances",
 ]
@@ -441,6 +443,28 @@ def score_sales_cash(item):
     if text.startswith("其中"):
         return 0
     if "销售商品" in text and "收到的现金" in text:
+        return 1
+    return 0
+
+
+def score_icf(item):
+    text = str(item).strip()
+    if "经营" in text or "筹资" in text:
+        return 0
+    if text == "投资活动产生的现金流量净额":
+        return 2
+    if text.startswith("投资活动产生的现金流量净"):
+        return 1
+    return 0
+
+
+def score_fcf(item):
+    text = str(item).strip()
+    if "经营" in text or "投资" in text:
+        return 0
+    if text == "筹资活动产生的现金流量净额":
+        return 2
+    if text.startswith("筹资活动产生的现金流量净"):
         return 1
     return 0
 
@@ -813,6 +837,8 @@ def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
     interest = pick_amount(income, score_interest_expense)
     non_op_income = pick_amount(income, score_non_operating_income)
     sales_cash = pick_amount(cashflow, score_sales_cash)
+    icf = pick_amount(cashflow, score_icf)
+    fcf = pick_amount(cashflow, score_fcf)
 
     wide = revenue.rename(columns={"value": "revenue", "item": "revenue_item"})
     wide = _merge_pick(wide, revenue_prior, "revenue_prior")
@@ -848,6 +874,8 @@ def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
     wide = _merge_pick(wide, interest, "interest_expense")
     wide = _merge_pick(wide, non_op_income, "non_operating_income")
     wide = _merge_pick(wide, sales_cash, "sales_cash")
+    wide = _merge_pick(wide, icf, "icf")
+    wide = _merge_pick(wide, fcf, "fcf")
     wide = _merge_counts(wide, statement_meta(income), "income_n_rows")
     wide = _merge_counts(wide, statement_meta(balance), "balance_n_rows")
     wide = _merge_counts(wide, statement_meta(cashflow), "cashflow_n_rows")
@@ -908,6 +936,8 @@ def coverage_table(metrics):
         "cash",
         "operating_profit",
         "sales_cash",
+        "icf",
+        "fcf",
         "interest_expense",
         "other_receivables",
         "goodwill",

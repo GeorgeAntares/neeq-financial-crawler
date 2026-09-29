@@ -55,10 +55,18 @@ BOXPLOT_COLS = [
     ("gross_margin", "毛利率（仅营业成本）"),
 ]
 
+BOXPLOT_FILES = {
+    "dso": "industry_dso.png",
+    "dio": "industry_dio.png",
+    "accruals_to_revenue": "industry_accruals.png",
+    "gross_margin": "industry_gm.png",
+}
+
 PORTRAIT_CHART = "industry_portrait.png"
 WC_CHART = "industry_wc_cycle.png"
 CASH_GAP_CHART = "industry_cash_gap.png"
 SENSITIVITY_CHART = "industry_sensitivity.png"
+MARGINS_CHART = "industry_margins.png"
 MEDIANS_NAME = "industry_medians.csv"
 ASSIGN_NAME = "industry_assignments.csv"
 COVERAGE_NAME = "industry_coverage.csv"
@@ -734,6 +742,13 @@ def render_report(summary, n_total, coverage=None, sensitivity=None, assoc=None)
         "- DSO / DIO 用期末余额 / 本年流量，不是严格的平均余额周转。",
         "- IQR 在全样本上算；组内离群点另看 730 天帽。",
         "",
+        "## 图",
+        "",
+        "一张图一个问题，图题写成结论；缺中位数留空，不用 0 填。",
+        "`industry_dso.png` / `industry_dio.png` / `industry_accruals.png` / `industry_gm.png` 各答一问；",
+        "`industry_wc_cycle.png` 是 DSO/DIO/DPO/CCC 中位数柱；`industry_cash_gap.png` 是利润与 OCF 符号；",
+        "`industry_margins.png` 是三行业毛利率/净利率/营业利润率；`industry_sensitivity.png` 是稳健对照。",
+        "",
     ]
     return "\n".join(lines)
 
@@ -753,107 +768,287 @@ def _boxplot_series(frame, group, col):
     return series.dropna().values
 
 
-def plot_boxplots(metrics, output_dir):
+def boxplot_conclusion(frame, col):
+    meds = {}
+    ns = {}
+    for group in GROUP_ORDER:
+        vals = _boxplot_series(frame, group, col)
+        ns[group] = int(len(vals))
+        meds[group] = float(np.median(vals)) if len(vals) else np.nan
+    mfg, sw = meds.get(GROUP_MANUFACTURING, np.nan), meds.get(GROUP_SOFTWARE, np.nan)
+    n_mfg, n_sw = ns.get(GROUP_MANUFACTURING, 0), ns.get(GROUP_SOFTWARE, 0)
+    if col == "dso":
+        if np.isfinite(mfg) and np.isfinite(sw):
+            if sw > mfg:
+                return f"主口径下软件应收账款周转长于制造（{sw:.0f} 天 n={n_sw} vs {mfg:.0f} 天 n={n_mfg}）"
+            return f"主口径下制造应收账款周转长于软件（{mfg:.0f} 天 n={n_mfg} vs {sw:.0f} 天 n={n_sw}）"
+        return "三类行业应收账款周转天数（主口径，缺行不记 0 天）"
+    if col == "dio":
+        if np.isfinite(mfg) and np.isfinite(sw):
+            return f"制造存货周转只略慢于软件（{mfg:.0f} vs {sw:.0f} 天）；缺存货行不记 0 天"
+        return "三类行业存货周转天数（缺存货行不记 0 天）"
+    if col == "accruals_to_revenue":
+        finite = [meds[g] for g in GROUP_ORDER if np.isfinite(meds[g])]
+        if finite and all(v < 0 for v in finite):
+            return "三类行业应计/收入中位数均为负：利润慢于经营现金"
+        return "应计利润 / 收入（完整个案，缺净利润或 OCF 不进图）"
+    if col == "gross_margin":
+        if np.isfinite(mfg) and np.isfinite(sw):
+            side = "高于" if sw >= mfg else "低于"
+            return f"软件毛利率中位数{side}制造（{sw * 100:.1f}% vs {mfg * 100:.1f}%，仅营业成本）"
+        return "毛利率（仅营业成本口径）"
+    return col
+
+
+def wc_bar_frame(summary):
+    """DSO/DIO/DPO/CCC medians with NaN preserved."""
+    cols = ["industry", "median_dso", "median_dio", "median_dpo", "median_ccc"]
+    have = [c for c in cols if c in summary.columns]
+    out = summary[have].copy()
+    for col in have:
+        if col != "industry":
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out
+
+
+def cash_sign_frame(summary):
+    cols = ["industry", "share_profit_pos_ocf_neg", "share_profit_neg_ocf_pos"]
+    have = [c for c in cols if c in summary.columns]
+    out = summary[have].copy()
+    for col in have:
+        if col != "industry":
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out
+
+
+def sensitivity_bar_values(sensitivity, industries, field, treatments, as_pct=False):
+    """List of lists, NaN when a treatment/industry median is missing."""
+    matrix = []
+    for treatment in treatments:
+        vals = []
+        for industry in industries:
+            med, _ = _sens_cell(sensitivity, industry, field, treatment)
+            if pd.isna(med):
+                vals.append(np.nan)
+            else:
+                vals.append(float(med) * 100 if as_pct else float(med))
+        matrix.append(vals)
+    return matrix
+
+
+def industry_margin_frame(labeled):
+    fields = ["gross_margin", "net_margin", "operating_margin"]
+    rows = []
+    work = labeled.copy()
+    if "industry" not in work.columns:
+        work["industry"] = GROUP_OTHER
+    for group in GROUP_ORDER:
+        part = work[work["industry"] == group]
+        rec = {"industry": group}
+        for field in fields:
+            if field not in part.columns:
+                rec[field] = np.nan
+                rec[f"n_{field}"] = 0
+                continue
+            values = pd.to_numeric(part[field], errors="coerce")
+            if field == "gross_margin":
+                values = values.where(_median_mask(part, "gross_margin"))
+            finite = values.dropna()
+            rec[field] = float(finite.median()) if len(finite) else np.nan
+            rec[f"n_{field}"] = int(len(finite))
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def _mpl():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
     matplotlib.rcParams["axes.unicode_minus"] = False
+    return plt
 
+
+def plot_boxplots(metrics, output_dir):
+    plt = _mpl()
     frame = metrics.copy()
     frame["industry"] = pd.Categorical(frame["industry"], categories=GROUP_ORDER, ordered=True)
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
-    for ax, (col, title) in zip(axes.ravel(), BOXPLOT_COLS):
+    paths = {}
+    ylabels = {
+        "dso": "天",
+        "dio": "天",
+        "accruals_to_revenue": "应计/收入",
+        "gross_margin": "毛利率",
+    }
+    for col, _fallback in BOXPLOT_COLS:
         if col not in frame.columns:
-            ax.set_visible(False)
             continue
+        fig, ax = plt.subplots(figsize=(7, 4.8))
         data = [_boxplot_series(frame, g, col) for g in GROUP_ORDER]
-        ax.boxplot(data, tick_labels=GROUP_ORDER, showfliers=False)
-        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.boxplot(data, tick_labels=list(GROUP_ORDER), showfliers=False)
+        ax.set_title(boxplot_conclusion(frame, col), fontsize=11, fontweight="bold")
+        ax.set_ylabel(ylabels.get(col, col))
         ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
-    fig.suptitle("三类行业：营运资金天数与盈余质量", fontsize=13, fontweight="bold")
-    fig.tight_layout()
-    path = os.path.join(output_dir, PORTRAIT_CHART)
-    _save_fig(path, fig)
-    return path
+        fig.tight_layout()
+        filename = BOXPLOT_FILES.get(col, f"industry_{col}.png")
+        path = os.path.join(output_dir, filename)
+        _save_fig(path, fig)
+        paths[col] = path
+    return paths
+
+
+def _wc_cycle_title(frame):
+    mfg = frame[frame["industry"] == GROUP_MANUFACTURING]
+    sw = frame[frame["industry"] == GROUP_SOFTWARE]
+    if mfg.empty or sw.empty:
+        return "营运资金周期中位数（缺中位数留空，不记 0 天）"
+    mfg_dso = float(mfg.iloc[0]["median_dso"]) if "median_dso" in mfg.columns else np.nan
+    sw_dso = float(sw.iloc[0]["median_dso"]) if "median_dso" in sw.columns else np.nan
+    if np.isfinite(mfg_dso) and np.isfinite(sw_dso) and sw_dso > mfg_dso:
+        return f"软件现金周期更长，主口径 DSO {sw_dso:.0f} 天对制造 {mfg_dso:.0f} 天"
+    return "营运资金周期中位数（缺中位数留空，不记 0 天）"
 
 
 def plot_wc_cycle(summary, output_dir):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    industries = summary["industry"].tolist()
+    plt = _mpl()
+    frame = wc_bar_frame(summary)
+    industries = frame["industry"].tolist()
     x = np.arange(len(industries))
     width = 0.2
-    dso = summary["median_dso"].fillna(0)
-    dio = summary["median_dio"].fillna(0)
-    dpo = summary["median_dpo"].fillna(0)
-    ccc = summary["median_ccc"].fillna(0)
-    axes[0].bar(x - 1.5 * width, dso, width, label="DSO", color="#4c78a8")
-    axes[0].bar(x - 0.5 * width, dio, width, label="DIO", color="#f58518")
-    axes[0].bar(x + 0.5 * width, dpo, width, label="DPO", color="#54a24b")
-    axes[0].bar(x + 1.5 * width, ccc, width, label="CCC", color="#e45756")
-    axes[0].set_xticks(x, industries)
-    axes[0].set_ylabel("天")
-    axes[0].set_title("中位数：营运资金周期", fontsize=11, fontweight="bold")
-    axes[0].legend(fontsize=8)
-    axes[0].axhline(0, color="#999999", linewidth=0.8, linestyle="--")
-
-    width2 = 0.35
-    gap = summary["share_profit_pos_ocf_neg"].fillna(0) * 100
-    rev = summary["share_profit_neg_ocf_pos"].fillna(0) * 100
-    axes[1].bar(x - width2 / 2, gap, width2, label="利润>0 且 OCF<0", color="#e45756")
-    axes[1].bar(x + width2 / 2, rev, width2, label="利润<0 且 OCF>0", color="#4c78a8")
-    axes[1].set_xticks(x, industries)
-    axes[1].set_ylabel("占比 (%)")
-    axes[1].set_title("盈余质量：利润与经营现金符号", fontsize=11, fontweight="bold")
-    axes[1].legend(fontsize=8)
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    series = [
+        ("median_dso", "DSO", "#4c78a8", -1.5),
+        ("median_dio", "DIO", "#f58518", -0.5),
+        ("median_dpo", "DPO", "#54a24b", 0.5),
+        ("median_ccc", "CCC", "#e45756", 1.5),
+    ]
+    for col, label, color, shift in series:
+        if col not in frame.columns:
+            continue
+        ax.bar(x + shift * width, frame[col].to_numpy(dtype=float), width, label=label, color=color)
+    ax.set_xticks(x, industries)
+    ax.set_ylabel("天")
+    ax.set_title(_wc_cycle_title(frame), fontsize=11, fontweight="bold")
+    ax.legend(fontsize=8)
+    ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
     fig.tight_layout()
     path = os.path.join(output_dir, WC_CHART)
     _save_fig(path, fig)
     return path
 
 
+def _cash_sign_title(frame):
+    if "share_profit_neg_ocf_pos" not in frame.columns:
+        return "利润与经营现金符号（完整个案）"
+    rev = pd.to_numeric(frame["share_profit_neg_ocf_pos"], errors="coerce")
+    gap = pd.to_numeric(frame["share_profit_pos_ocf_neg"], errors="coerce") if "share_profit_pos_ocf_neg" in frame.columns else pd.Series(dtype=float)
+    if rev.notna().any() and gap.notna().any() and float(rev.sum()) > float(gap.sum()):
+        return "现金矛盾更多是亏损仍有经营现金，而不是赚钱没现金"
+    return "利润与经营现金符号（完整个案）"
+
+
+def plot_cash_gap(summary, output_dir):
+    plt = _mpl()
+    frame = cash_sign_frame(summary)
+    industries = frame["industry"].tolist()
+    x = np.arange(len(industries))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    gap = frame["share_profit_pos_ocf_neg"] * 100 if "share_profit_pos_ocf_neg" in frame.columns else pd.Series(np.nan, index=frame.index)
+    rev = frame["share_profit_neg_ocf_pos"] * 100 if "share_profit_neg_ocf_pos" in frame.columns else pd.Series(np.nan, index=frame.index)
+    ax.bar(x - width / 2, gap.to_numpy(dtype=float), width, label="利润>0 且 OCF<0", color="#e45756")
+    ax.bar(x + width / 2, rev.to_numpy(dtype=float), width, label="利润<0 且 OCF>0", color="#4c78a8")
+    ax.set_xticks(x, industries)
+    ax.set_ylabel("占比 (%)")
+    ax.set_title(_cash_sign_title(frame), fontsize=11, fontweight="bold")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = os.path.join(output_dir, CASH_GAP_CHART)
+    _save_fig(path, fig)
+    return path
+
+
+def _sensitivity_title(sensitivity):
+    sw_q, _ = _sens_cell(sensitivity, GROUP_SOFTWARE, "dso", "quality")
+    mfg_q, _ = _sens_cell(sensitivity, GROUP_MANUFACTURING, "dso", "quality")
+    sw_iqr, _ = _sens_cell(sensitivity, GROUP_SOFTWARE, "dso", "iqr")
+    mfg_iqr, _ = _sens_cell(sensitivity, GROUP_MANUFACTURING, "dso", "iqr")
+    if np.isfinite(sw_q) and np.isfinite(mfg_q) and np.isfinite(sw_iqr) and np.isfinite(mfg_iqr):
+        if sw_q > mfg_q and sw_iqr < mfg_iqr:
+            return "软件 DSO 长于制造，去掉 IQR 后方向会翻"
+    return "DSO / 应计：主口径、含异常天数、IQR、缩尾"
+
+
 def plot_sensitivity(sensitivity, output_dir):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
-
+    plt = _mpl()
     if sensitivity is None or sensitivity.empty:
         return None
     industries = [g for g in GROUP_ORDER if g in set(sensitivity["industry"])]
     treatments = list(TREATMENTS)
     colors = ["#4c78a8", "#f58518", "#54a24b", "#e45756"]
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    specs = [("dso", "DSO（天）", False), ("accruals_to_revenue", "应计/收入", True)]
+    specs = [("dso", "DSO（天）", False), ("accruals_to_revenue", "应计/收入（%）", True)]
     x = np.arange(len(industries))
     width = 0.18
-    for ax, (field, title, as_pct) in zip(axes, specs):
+    for ax, (field, ylabel, as_pct) in zip(axes, specs):
+        matrix = sensitivity_bar_values(sensitivity, industries, field, treatments, as_pct=as_pct)
         for i, treatment in enumerate(treatments):
-            vals = []
-            for ind in industries:
-                med, _ = _sens_cell(sensitivity, ind, field, treatment)
-                if pd.isna(med):
-                    vals.append(0.0)
-                else:
-                    vals.append(med * 100 if as_pct else med)
-            ax.bar(x + (i - 1.5) * width, vals, width, label=TREAT_LABEL[treatment], color=colors[i])
+            ax.bar(x + (i - 1.5) * width, matrix[i], width, label=TREAT_LABEL[treatment], color=colors[i])
         ax.set_xticks(x, industries)
-        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.set_ylabel(ylabel)
         ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
         ax.legend(fontsize=7)
-    fig.suptitle("稳健：主口径 / 含异常天数 / IQR / 缩尾", fontsize=13, fontweight="bold")
+    fig.suptitle(_sensitivity_title(sensitivity), fontsize=13, fontweight="bold")
     fig.tight_layout()
     path = os.path.join(output_dir, SENSITIVITY_CHART)
+    _save_fig(path, fig)
+    return path
+
+
+def _margins_title(frame):
+    mfg = frame[frame["industry"] == GROUP_MANUFACTURING]
+    sw = frame[frame["industry"] == GROUP_SOFTWARE]
+    if mfg.empty or sw.empty:
+        return "三行业利润率（完整个案中位数，缺值留空）"
+    mfg_gm = float(mfg.iloc[0]["gross_margin"]) if "gross_margin" in mfg.columns else np.nan
+    sw_gm = float(sw.iloc[0]["gross_margin"]) if "gross_margin" in sw.columns else np.nan
+    mfg_nm = float(mfg.iloc[0]["net_margin"]) if "net_margin" in mfg.columns else np.nan
+    sw_nm = float(sw.iloc[0]["net_margin"]) if "net_margin" in sw.columns else np.nan
+    if np.isfinite(mfg_gm) and np.isfinite(sw_gm) and np.isfinite(mfg_nm) and np.isfinite(sw_nm):
+        if sw_gm >= mfg_gm and sw_nm <= mfg_nm:
+            return "软件毛利率更高，净利率中位数却更低"
+        if sw_gm >= mfg_gm:
+            return "软件毛利率中位数高于制造"
+    return "三行业利润率（完整个案中位数，缺值留空）"
+
+
+def plot_industry_margins(labeled, output_dir):
+    plt = _mpl()
+    frame = industry_margin_frame(labeled)
+    if frame.empty:
+        return None
+    industries = frame["industry"].tolist()
+    x = np.arange(len(industries))
+    width = 0.25
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    specs = [
+        ("gross_margin", "毛利率", "#4c78a8", -1),
+        ("net_margin", "净利率", "#f58518", 0),
+        ("operating_margin", "营业利润率", "#54a24b", 1),
+    ]
+    for col, label, color, shift in specs:
+        if col not in frame.columns:
+            continue
+        vals = pd.to_numeric(frame[col], errors="coerce") * 100
+        ax.bar(x + shift * width, vals.to_numpy(dtype=float), width, label=label, color=color)
+    ax.set_xticks(x, industries)
+    ax.set_ylabel("%")
+    ax.set_title(_margins_title(frame), fontsize=11, fontweight="bold")
+    ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = os.path.join(output_dir, MARGINS_CHART)
     _save_fig(path, fig)
     return path
 
@@ -911,9 +1106,19 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
         with open(report_path, "w", encoding="utf-8") as handle:
             handle.write(report)
 
-    box_path = plot_boxplots(labeled, output_dir)
-    wc_path = plot_wc_cycle(summary, output_dir)
-    sens_chart = plot_sensitivity(sensitivity, output_dir)
+    box_paths = {}
+    wc_path = None
+    cash_path = None
+    margin_path = None
+    sens_chart = None
+    try:
+        box_paths = plot_boxplots(labeled, output_dir)
+        wc_path = plot_wc_cycle(summary, output_dir)
+        cash_path = plot_cash_gap(summary, output_dir)
+        margin_path = plot_industry_margins(labeled, output_dir)
+        sens_chart = plot_sensitivity(sensitivity, output_dir)
+    except Exception as exc:
+        print(f"industry charts skipped: {exc}")
 
     print(summary.to_string(index=False))
     print(f"wrote {assign_path}")
@@ -921,8 +1126,14 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
     print(f"wrote {cov_path}")
     print(f"wrote {sens_path}")
     print(f"wrote {md_path}")
-    print(f"wrote {box_path}")
-    print(f"wrote {wc_path}")
+    for path in box_paths.values():
+        print(f"wrote {path}")
+    if wc_path:
+        print(f"wrote {wc_path}")
+    if cash_path:
+        print(f"wrote {cash_path}")
+    if margin_path:
+        print(f"wrote {margin_path}")
     if sens_chart:
         print(f"wrote {sens_chart}")
     if report_path:

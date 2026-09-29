@@ -11,6 +11,8 @@ from company_metrics import (
     quality_summary,
     score_cash,
     score_equity,
+    score_fcf,
+    score_icf,
     score_interest_expense,
     score_net_profit,
     score_operating_profit,
@@ -95,9 +97,12 @@ class CompanyMetricsTest(unittest.TestCase):
                     ["销售商品、提供劳务收到的现金", 900_000, 700_000],
                     ["经营活动产生的现金流量净额", 40_000, 20_000],
                     ["投资活动产生的现金流量净额", -10_000, -5_000],
+                    ["筹资活动产生的现金流量净额", 15_000, 8_000],
                     ["项目", "", ""],
                     ["销售商品、提供劳务收到的现金", 1, 1],
                     ["经营活动产生的现金流量净额", 999, 1],
+                    ["投资活动产生的现金流量净额", 888, 1],
+                    ["筹资活动产生的现金流量净额", 777, 1],
                 ],
                 ["项目", "本期金额", "上期金额"],
             )
@@ -110,6 +115,8 @@ class CompanyMetricsTest(unittest.TestCase):
         self.assertEqual(row["cost_source"], "营业成本")
         self.assertEqual(row["net_profit"], 100_000)
         self.assertEqual(row["ocf"], 40_000)
+        self.assertEqual(row["icf"], -10_000)
+        self.assertEqual(row["fcf"], 15_000)
         self.assertEqual(row["equity"], 600_000)
         self.assertEqual(row["equity_source"], "total")
         self.assertAlmostEqual(row["gross_margin"], 0.6)
@@ -215,6 +222,10 @@ class CompanyMetricsTest(unittest.TestCase):
         self.assertGreater(score_interest_expense("其中：利息费用"), score_interest_expense("利息费用"))
         self.assertEqual(score_interest_expense("利息收入"), 0)
         self.assertGreater(score_sales_cash("销售商品、提供劳务收到的现金"), 0)
+        self.assertGreater(score_icf("投资活动产生的现金流量净额"), 0)
+        self.assertEqual(score_icf("经营活动产生的现金流量净额"), 0)
+        self.assertGreater(score_fcf("筹资活动产生的现金流量净额"), 0)
+        self.assertEqual(score_fcf("投资活动产生的现金流量净额"), 0)
 
     def test_quality_flags_equity_inventory_dso_articulation(self):
         with tempfile.TemporaryDirectory() as temp_dir:

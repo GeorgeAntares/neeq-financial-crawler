@@ -108,3 +108,10 @@ IQR 围栏在全样本上算，与 `preprocess.py` 一致。软件只有二十�
 - 行业标签来自本地 PDF 文件夹，不是交易所实时行业。
 - DSO / DIO 用期末余额 / 本年流量，不是严格的平均余额周转。
 - IQR 在全样本上算；组内离群点另看 730 天帽。
+
+## 图
+
+一张图一个问题，图题写成结论；缺中位数留空，不用 0 填。
+`industry_dso.png` / `industry_dio.png` / `industry_accruals.png` / `industry_gm.png` 各答一问；
+`industry_wc_cycle.png` 是 DSO/DIO/DPO/CCC 中位数柱；`industry_cash_gap.png` 是利润与 OCF 符号；
+`industry_margins.png` 是三行业毛利率/净利率/营业利润率；`industry_sensitivity.png` 是稳健对照。

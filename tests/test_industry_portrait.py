@@ -16,11 +16,15 @@ from industry_groups import (
 from industry_portrait import (
     add_derived,
     attach_industry,
+    boxplot_conclusion,
+    industry_margin_frame,
     industry_tables,
     pairwise_spearman,
     question_coverage,
     render_report,
+    sensitivity_bar_values,
     sensitivity_table,
+    wc_bar_frame,
 )
 
 
@@ -99,7 +103,19 @@ class IndustryPortraitTest(unittest.TestCase):
         self.assertIn("利润为正且 OCF 为负", text)
         self.assertIn("应计", text)
         self.assertIn("完整个案", text)
+        self.assertIn("一张图一个问题", text)
         self.assertEqual(int(by_ind.loc[GROUP_MANUFACTURING, "n_gross_margin"]), 2)
+
+        wc = wc_bar_frame(pd.DataFrame({
+            "industry": [GROUP_MANUFACTURING, GROUP_SOFTWARE],
+            "median_dso": [105.0, np.nan],
+            "median_dio": [113.0, 100.0],
+            "median_dpo": [95.0, 125.0],
+            "median_ccc": [139.0, np.nan],
+        }))
+        self.assertTrue(np.isnan(wc.loc[wc["industry"] == GROUP_SOFTWARE, "median_dso"].iloc[0]))
+        self.assertTrue(np.isnan(wc.loc[wc["industry"] == GROUP_SOFTWARE, "median_ccc"].iloc[0]))
+        self.assertAlmostEqual(float(wc.loc[wc["industry"] == GROUP_MANUFACTURING, "median_dso"].iloc[0]), 105.0)
 
     def test_gm_median_skips_invalid_cost_source(self):
         metrics = pd.DataFrame({
@@ -189,6 +205,17 @@ class IndustryPortraitTest(unittest.TestCase):
         self.assertEqual(int(quality["n"]), 16)
         self.assertEqual(int(iqr["n"]), 15)
         self.assertLess(float(iqr["median"]), float(quality["median"]))
+        matrix = sensitivity_bar_values(
+            pd.DataFrame([
+                {"industry": GROUP_MANUFACTURING, "field": "dso", "treatment": "quality", "median": 105.0, "n": 80},
+                {"industry": GROUP_SOFTWARE, "field": "dso", "treatment": "quality", "median": np.nan, "n": 0},
+            ]),
+            [GROUP_MANUFACTURING, GROUP_SOFTWARE],
+            "dso",
+            ("quality",),
+        )
+        self.assertAlmostEqual(matrix[0][0], 105.0)
+        self.assertTrue(np.isnan(matrix[0][1]))
 
     def test_spearman_complete_pairs(self):
         metrics = pd.DataFrame({
@@ -216,6 +243,32 @@ class IndustryPortraitTest(unittest.TestCase):
             })
             labeled = attach_industry(metrics, pdf_root=root)
             self.assertEqual(labeled.iloc[0]["industry"], GROUP_MANUFACTURING)
+
+    def test_margin_frame_skips_invalid_gm(self):
+        labeled = pd.DataFrame({
+            "industry": [GROUP_MANUFACTURING, GROUP_MANUFACTURING, GROUP_SOFTWARE],
+            "gross_margin": [0.20, 0.90, 0.40],
+            "gm_valid": [True, False, True],
+            "net_margin": [0.04, 0.03, -0.01],
+            "operating_margin": [0.06, np.nan, 0.02],
+        })
+        frame = industry_margin_frame(labeled)
+        mfg = frame[frame["industry"] == GROUP_MANUFACTURING].iloc[0]
+        self.assertAlmostEqual(float(mfg["gross_margin"]), 0.20)
+        self.assertEqual(int(mfg["n_gross_margin"]), 1)
+        self.assertAlmostEqual(float(mfg["operating_margin"]), 0.06)
+        sw = frame[frame["industry"] == GROUP_SOFTWARE].iloc[0]
+        self.assertAlmostEqual(float(sw["gross_margin"]), 0.40)
+
+    def test_boxplot_conclusion_mentions_direction(self):
+        metrics = pd.DataFrame({
+            "industry": [GROUP_MANUFACTURING] * 3 + [GROUP_SOFTWARE] * 3 + [GROUP_OTHER] * 2,
+            "dso": [100.0, 105.0, 110.0, 170.0, 180.0, 190.0, 120.0, 130.0],
+            "dso_anomalous": [False] * 8,
+        })
+        title = boxplot_conclusion(metrics, "dso")
+        self.assertIn("软件", title)
+        self.assertIn("制造", title)
 
     def test_main_guard_present(self):
         text = Path(__file__).resolve().parents[1].joinpath("industry_portrait.py").read_text(encoding="utf-8")

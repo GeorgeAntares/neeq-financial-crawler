@@ -361,7 +361,8 @@ def main(csv_dir=None, output_dir=None):
     ax1.hist(log_revenue, bins=30, color='steelblue', edgecolor='white', alpha=0.8)
     ax1.set_xlabel('营收（log10 元）/ Revenue (log10 CNY)', fontsize=10)
     ax1.set_ylabel('企业数 / Number of Companies', fontsize=10)
-    ax1.set_title('营收分布 / Revenue Distribution', fontsize=12, fontweight='bold')
+    med_rev = revenue_df['revenue'].median()
+    ax1.set_title(f'有效营收右偏，中位数 {med_rev/1e8:.2f} 亿元', fontsize=12, fontweight='bold')
     ax1.axvline(log_revenue.mean(), color='red', linestyle='--', label=f'均值 Mean: {10**log_revenue.mean()/1e8:.1f}亿')
     ax1.legend(fontsize=9)
 
@@ -372,7 +373,8 @@ def main(csv_dir=None, output_dir=None):
     ax2.axvline(0, color='red', linestyle='--', linewidth=1, label='盈亏平衡 Break-even')
     ax2.set_xlabel('毛利率 (%) / Gross Margin (%)', fontsize=10)
     ax2.set_ylabel('企业数 / Number of Companies', fontsize=10)
-    ax2.set_title('毛利率分布 / Gross Margin Distribution', fontsize=12, fontweight='bold')
+    med_gm = float(np.nanmedian(profit_df['gross_margin'])) if 'gross_margin' in profit_df.columns else float(np.nanmedian(margins))
+    ax2.set_title(f'毛利率中位数 {med_gm:.1f}%（直方图已截尾）', fontsize=12, fontweight='bold')
     ax2.legend(fontsize=9)
 
     # 图3: 营收 Top 15 / Top 15 by revenue
@@ -380,7 +382,7 @@ def main(csv_dir=None, output_dir=None):
     top15 = revenue_df.nlargest(15, 'revenue').sort_values('revenue')
     bars = ax3.barh(top15['company_name'], top15['revenue'] / 1e8, color='teal', alpha=0.8)
     ax3.set_xlabel('营收（亿元）/ Revenue (100M CNY)', fontsize=10)
-    ax3.set_title('营收 Top 15 企业 / Top 15 Companies by Revenue', fontsize=12, fontweight='bold')
+    ax3.set_title('营收前 15 家拉开了样本右尾', fontsize=12, fontweight='bold')
     ax3.tick_params(axis='y', labelsize=8)
 
     # 图4: 经营现金流正负对比 / OCF positive vs negative
@@ -390,7 +392,8 @@ def main(csv_dir=None, output_dir=None):
     colors = ['#2ecc71', '#e74c3c']
     bars = ax4.bar(categories, values, color=colors, edgecolor='white', alpha=0.85)
     ax4.set_ylabel('企业数 / Number of Companies', fontsize=10)
-    ax4.set_title('经营现金流正负对比 / OCF Positive vs Negative', fontsize=12, fontweight='bold')
+    pos_share = len(positive_ocf) / n_ocf * 100
+    ax4.set_title(f'有 OCF 的企业中 {pos_share:.0f}% 经营现金为正', fontsize=12, fontweight='bold')
     for bar, val in zip(bars, values):
         ax4.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
                  str(val), ha='center', va='bottom', fontsize=11, fontweight='bold')
