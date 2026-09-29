@@ -9,9 +9,12 @@ from industry_groups import (
     GROUP_MANUFACTURING,
     GROUP_OTHER,
     GROUP_SOFTWARE,
+    SECTOR_UNFILED,
     assign_industries,
+    classify_folder,
     group_from_folder,
     scan_pdf_folders,
+    sector_summary,
 )
 from industry_portrait import (
     add_derived,
@@ -41,6 +44,27 @@ class IndustryGroupsTest(unittest.TestCase):
         self.assertEqual(group_from_folder("00_待分类"), GROUP_OTHER)
         self.assertEqual(group_from_folder(""), GROUP_OTHER)
 
+    def test_classify_folder_keeps_sector_inside_other(self):
+        mfg = classify_folder("01_制造业")
+        self.assertEqual(mfg["group"], GROUP_MANUFACTURING)
+        self.assertEqual(mfg["sector"], "01")
+        self.assertEqual(mfg["sector_label"], "制造业")
+        software = classify_folder("02_信息传输_软件和信息技术服务业")
+        self.assertEqual(software["group"], GROUP_SOFTWARE)
+        self.assertEqual(software["sector"], "02")
+        pending = classify_folder("00_待分类")
+        self.assertEqual(pending["group"], GROUP_OTHER)
+        self.assertEqual(pending["sector"], "00")
+        self.assertEqual(pending["sector_label"], "待分类")
+        wholesale = classify_folder("03_批发和零售业")
+        self.assertEqual(wholesale["group"], GROUP_OTHER)
+        self.assertEqual(wholesale["sector"], "03")
+        self.assertEqual(wholesale["sector_label"], "批发零售")
+        empty = classify_folder("")
+        self.assertEqual(empty["group"], GROUP_OTHER)
+        self.assertEqual(empty["sector"], SECTOR_UNFILED)
+        self.assertEqual(empty["sector_label"], "未归档")
+
     def test_prefers_csrc_folder_over_unclassified(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -51,14 +75,21 @@ class IndustryGroupsTest(unittest.TestCase):
             touch_pdf(root, "430004_丁_2025_x.pdf")
             mapping = scan_pdf_folders(root)
             self.assertEqual(mapping["430001"], "01_制造业")
-            assigned = {row["stock_code"]: row["industry"] for row in assign_industries(
+            assigned = {row["stock_code"]: row for row in assign_industries(
                 ["430001", "430002", "430003", "430004", "430099"], pdf_root=root
             )}
-            self.assertEqual(assigned["430001"], GROUP_MANUFACTURING)
-            self.assertEqual(assigned["430002"], GROUP_SOFTWARE)
-            self.assertEqual(assigned["430003"], GROUP_OTHER)
-            self.assertEqual(assigned["430004"], GROUP_OTHER)
-            self.assertEqual(assigned["430099"], GROUP_OTHER)
+            self.assertEqual(assigned["430001"]["industry"], GROUP_MANUFACTURING)
+            self.assertEqual(assigned["430001"]["sector"], "01")
+            self.assertEqual(assigned["430002"]["industry"], GROUP_SOFTWARE)
+            self.assertEqual(assigned["430003"]["industry"], GROUP_OTHER)
+            self.assertEqual(assigned["430003"]["sector"], "03")
+            self.assertEqual(assigned["430004"]["industry"], GROUP_OTHER)
+            self.assertEqual(assigned["430004"]["sector"], SECTOR_UNFILED)
+            self.assertEqual(assigned["430099"]["industry"], GROUP_OTHER)
+            counts = {row["sector"]: row["n"] for row in sector_summary(assigned.values())}
+            self.assertEqual(counts["01"], 1)
+            self.assertEqual(counts["03"], 1)
+            self.assertEqual(counts[SECTOR_UNFILED], 2)
 
 
 class IndustryPortraitTest(unittest.TestCase):

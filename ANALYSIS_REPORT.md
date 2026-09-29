@@ -218,9 +218,9 @@ ROE = 净利率 × 总资产周转 × 权益乘数。99 家三项齐全时，乘
 
 单年截面没有三年毛利率/净利率波动，也没有审计意见。可持续性这一问只落到当年周转和同比。没有扣非，利润瀑布里营业利润到净利润的阶梯是残差（税及其他）。
 
-单家图（gitignored，`output/analysis/report_cards/`）：利润瀑布、经营/投资/筹资三分类柱、杜邦三因子（本公司蓝、行业中位灰）、同行业 5–8 家条形、红旗色块。缺科目跳过该柱，不用 0 填。例卡红旗色块见 `company_report_card_flag_grid.png`。
+单家图（gitignored，`output/analysis/report_cards/`）默认是一张一页纸 `*_card.png`：KPI 条、利润瀑布、经营/投资/筹资三分类、杜邦对照、DSO/DIO/现金周期、红旗。缺科目跳过该柱，不用 0 填。行业总图 `industry_board.png`。例卡红旗色块见 `company_report_card_flag_grid.png`。
 
-脚本：`report_card.py`（图在 `report_charts.py`）。
+脚本：`report_card.py`（图在 `report_charts.py`，主题 `chart_theme.py`，归类 `chart_catalog.py`）。
 
 ---
 

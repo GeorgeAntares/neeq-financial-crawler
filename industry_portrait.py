@@ -16,6 +16,20 @@ import os
 import numpy as np
 import pandas as pd
 
+from chart_theme import (
+    FIRM,
+    FLAG,
+    INK,
+    MUTED,
+    PEER,
+    RULE,
+    UP,
+    group_color,
+    restyle,
+    save_fig,
+    set_panel,
+    use_mpl,
+)
 from company_metrics import OUTPUT_DIR_DEFAULT, build_company_metrics, default_csv_dir
 from industry_groups import (
     GROUP_MANUFACTURING,
@@ -63,6 +77,7 @@ BOXPLOT_FILES = {
 }
 
 PORTRAIT_CHART = "industry_portrait.png"
+BOARD_CHART = "industry_board.png"
 WC_CHART = "industry_wc_cycle.png"
 CASH_GAP_CHART = "industry_cash_gap.png"
 SENSITIVITY_CHART = "industry_sensitivity.png"
@@ -109,7 +124,10 @@ def attach_industry(metrics, pdf_root=None):
     assigned = pd.DataFrame(assign_industries(frame["stock_code"], pdf_root=pdf_root))
     assigned = assigned.drop_duplicates(subset=["stock_code"])
     if "industry" in frame.columns:
-        frame = frame.drop(columns=["industry", "industry_raw"], errors="ignore")
+        frame = frame.drop(
+            columns=["industry", "industry_raw", "sector", "sector_label"],
+            errors="ignore",
+        )
     return frame.merge(assigned, on="stock_code", how="left")
 
 
@@ -745,6 +763,7 @@ def render_report(summary, n_total, coverage=None, sensitivity=None, assoc=None)
         "## 图",
         "",
         "一张图一个问题，图题写成结论；缺中位数留空，不用 0 填。",
+        "`industry_board.png` 是行业一页纸；分题图仍按问题各存一张。",
         "`industry_dso.png` / `industry_dio.png` / `industry_accruals.png` / `industry_gm.png` 各答一问；",
         "`industry_wc_cycle.png` 是 DSO/DIO/DPO/CCC 中位数柱；`industry_cash_gap.png` 是利润与 OCF 符号；",
         "`industry_margins.png` 是三行业毛利率/净利率/营业利润率；`industry_sensitivity.png` 是稳健对照。",
@@ -754,11 +773,7 @@ def render_report(summary, n_total, coverage=None, sensitivity=None, assoc=None)
 
 
 def _save_fig(path, fig):
-    if os.path.exists(path):
-        os.remove(path)
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    import matplotlib.pyplot as plt
-    plt.close(fig)
+    return save_fig(fig, path)
 
 
 def _boxplot_series(frame, group, col):
@@ -861,13 +876,31 @@ def industry_margin_frame(labeled):
 
 
 def _mpl():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
+    _, plt = use_mpl()
     return plt
+
+
+def _style_boxplot(ax, data, ylabel=None, as_pct=False):
+    if as_pct:
+        data = [np.asarray(s, dtype=float) * 100 for s in data]
+    bp = ax.boxplot(
+        data,
+        tick_labels=list(GROUP_ORDER),
+        showfliers=False,
+        patch_artist=True,
+        widths=0.55,
+        medianprops={"color": INK, "linewidth": 1.4},
+        whiskerprops={"color": MUTED, "linewidth": 0.9},
+        capprops={"color": MUTED, "linewidth": 0.9},
+        boxprops={"linewidth": 0},
+    )
+    for patch, group in zip(bp["boxes"], GROUP_ORDER):
+        patch.set_facecolor(group_color(group))
+        patch.set_alpha(0.85)
+    ax.axhline(0, color=RULE, linewidth=0.8)
+    restyle(ax)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=8)
 
 
 def plot_boxplots(metrics, output_dir):
@@ -878,19 +911,23 @@ def plot_boxplots(metrics, output_dir):
     ylabels = {
         "dso": "天",
         "dio": "天",
-        "accruals_to_revenue": "应计/收入",
-        "gross_margin": "毛利率",
+        "accruals_to_revenue": "%",
+        "gross_margin": "%",
+    }
+    as_pct_cols = {"accruals_to_revenue", "gross_margin"}
+    kickers = {
+        "dso": "4  营运与现金",
+        "dio": "4  营运与现金",
+        "accruals_to_revenue": "2  利润真不真",
+        "gross_margin": "1  怎么赚钱",
     }
     for col, _fallback in BOXPLOT_COLS:
         if col not in frame.columns:
             continue
         fig, ax = plt.subplots(figsize=(7, 4.8))
         data = [_boxplot_series(frame, g, col) for g in GROUP_ORDER]
-        ax.boxplot(data, tick_labels=list(GROUP_ORDER), showfliers=False)
-        ax.set_title(boxplot_conclusion(frame, col), fontsize=11, fontweight="bold")
-        ax.set_ylabel(ylabels.get(col, col))
-        ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
-        fig.tight_layout()
+        _style_boxplot(ax, data, ylabels.get(col, col), as_pct=col in as_pct_cols)
+        set_panel(ax, title=boxplot_conclusion(frame, col), kicker=kickers.get(col))
         filename = BOXPLOT_FILES.get(col, f"industry_{col}.png")
         path = os.path.join(output_dir, filename)
         _save_fig(path, fig)
@@ -910,29 +947,33 @@ def _wc_cycle_title(frame):
     return "营运资金周期中位数（缺中位数留空，不记 0 天）"
 
 
-def plot_wc_cycle(summary, output_dir):
-    plt = _mpl()
-    frame = wc_bar_frame(summary)
+def _draw_wc_cycle(ax, frame):
     industries = frame["industry"].tolist()
     x = np.arange(len(industries))
-    width = 0.2
-    fig, ax = plt.subplots(figsize=(8, 4.8))
+    width = 0.18
     series = [
-        ("median_dso", "DSO", "#4c78a8", -1.5),
-        ("median_dio", "DIO", "#f58518", -0.5),
-        ("median_dpo", "DPO", "#54a24b", 0.5),
-        ("median_ccc", "CCC", "#e45756", 1.5),
+        ("median_dso", "DSO", FIRM, -1.5),
+        ("median_dio", "DIO", UP, -0.5),
+        ("median_dpo", "DPO", PEER, 0.5),
+        ("median_ccc", "CCC", FLAG, 1.5),
     ]
     for col, label, color, shift in series:
         if col not in frame.columns:
             continue
-        ax.bar(x + shift * width, frame[col].to_numpy(dtype=float), width, label=label, color=color)
+        ax.bar(x + shift * width, frame[col].to_numpy(dtype=float), width, label=label, color=color, linewidth=0)
     ax.set_xticks(x, industries)
-    ax.set_ylabel("天")
-    ax.set_title(_wc_cycle_title(frame), fontsize=11, fontweight="bold")
-    ax.legend(fontsize=8)
-    ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
-    fig.tight_layout()
+    ax.axhline(0, color=RULE, linewidth=0.8)
+    restyle(ax)
+    ax.legend(loc="lower right", fontsize=8)
+    ax.set_ylabel("天", fontsize=8)
+
+
+def plot_wc_cycle(summary, output_dir):
+    plt = _mpl()
+    frame = wc_bar_frame(summary)
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    _draw_wc_cycle(ax, frame)
+    set_panel(ax, title=_wc_cycle_title(frame), kicker="4  营运与现金")
     path = os.path.join(output_dir, WC_CHART)
     _save_fig(path, fig)
     return path
@@ -948,22 +989,26 @@ def _cash_sign_title(frame):
     return "利润与经营现金符号（完整个案）"
 
 
+def _draw_cash_gap(ax, frame):
+    industries = frame["industry"].tolist()
+    x = np.arange(len(industries))
+    width = 0.34
+    gap = frame["share_profit_pos_ocf_neg"] * 100 if "share_profit_pos_ocf_neg" in frame.columns else pd.Series(np.nan, index=frame.index)
+    rev = frame["share_profit_neg_ocf_pos"] * 100 if "share_profit_neg_ocf_pos" in frame.columns else pd.Series(np.nan, index=frame.index)
+    ax.bar(x - width / 2, gap.to_numpy(dtype=float), width, label="利润>0 且 OCF<0", color=FLAG, linewidth=0)
+    ax.bar(x + width / 2, rev.to_numpy(dtype=float), width, label="利润<0 且 OCF>0", color=FIRM, linewidth=0)
+    ax.set_xticks(x, industries)
+    ax.set_ylabel("占比 (%)", fontsize=8)
+    restyle(ax)
+    ax.legend(loc="upper right", fontsize=8)
+
+
 def plot_cash_gap(summary, output_dir):
     plt = _mpl()
     frame = cash_sign_frame(summary)
-    industries = frame["industry"].tolist()
-    x = np.arange(len(industries))
-    width = 0.35
-    fig, ax = plt.subplots(figsize=(8, 4.8))
-    gap = frame["share_profit_pos_ocf_neg"] * 100 if "share_profit_pos_ocf_neg" in frame.columns else pd.Series(np.nan, index=frame.index)
-    rev = frame["share_profit_neg_ocf_pos"] * 100 if "share_profit_neg_ocf_pos" in frame.columns else pd.Series(np.nan, index=frame.index)
-    ax.bar(x - width / 2, gap.to_numpy(dtype=float), width, label="利润>0 且 OCF<0", color="#e45756")
-    ax.bar(x + width / 2, rev.to_numpy(dtype=float), width, label="利润<0 且 OCF>0", color="#4c78a8")
-    ax.set_xticks(x, industries)
-    ax.set_ylabel("占比 (%)")
-    ax.set_title(_cash_sign_title(frame), fontsize=11, fontweight="bold")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    _draw_cash_gap(ax, frame)
+    set_panel(ax, title=_cash_sign_title(frame), kicker="2  利润真不真")
     path = os.path.join(output_dir, CASH_GAP_CHART)
     _save_fig(path, fig)
     return path
@@ -986,21 +1031,21 @@ def plot_sensitivity(sensitivity, output_dir):
         return None
     industries = [g for g in GROUP_ORDER if g in set(sensitivity["industry"])]
     treatments = list(TREATMENTS)
-    colors = ["#4c78a8", "#f58518", "#54a24b", "#e45756"]
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    colors = [FIRM, PEER, UP, FLAG]
+    fig, axes = plt.subplots(1, 2, figsize=(12.2, 5.1))
     specs = [("dso", "DSO（天）", False), ("accruals_to_revenue", "应计/收入（%）", True)]
     x = np.arange(len(industries))
     width = 0.18
     for ax, (field, ylabel, as_pct) in zip(axes, specs):
         matrix = sensitivity_bar_values(sensitivity, industries, field, treatments, as_pct=as_pct)
         for i, treatment in enumerate(treatments):
-            ax.bar(x + (i - 1.5) * width, matrix[i], width, label=TREAT_LABEL[treatment], color=colors[i])
+            ax.bar(x + (i - 1.5) * width, matrix[i], width, label=TREAT_LABEL[treatment], color=colors[i], linewidth=0)
         ax.set_xticks(x, industries)
-        ax.set_ylabel(ylabel)
-        ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
-        ax.legend(fontsize=7)
-    fig.suptitle(_sensitivity_title(sensitivity), fontsize=13, fontweight="bold")
-    fig.tight_layout()
+        ax.set_ylabel(ylabel, fontsize=8)
+        ax.axhline(0, color=RULE, linewidth=0.8)
+        restyle(ax)
+        ax.legend(fontsize=7, loc="upper right")
+    fig.suptitle(_sensitivity_title(sensitivity), fontsize=12, color=INK, x=0.06, ha="left")
     path = os.path.join(output_dir, SENSITIVITY_CHART)
     _save_fig(path, fig)
     return path
@@ -1023,34 +1068,85 @@ def _margins_title(frame):
     return "三行业利润率（完整个案中位数，缺值留空）"
 
 
-def plot_industry_margins(labeled, output_dir):
-    plt = _mpl()
-    frame = industry_margin_frame(labeled)
-    if frame.empty:
-        return None
+def _draw_margins(ax, frame):
     industries = frame["industry"].tolist()
     x = np.arange(len(industries))
-    width = 0.25
-    fig, ax = plt.subplots(figsize=(8, 4.8))
+    width = 0.24
     specs = [
-        ("gross_margin", "毛利率", "#4c78a8", -1),
-        ("net_margin", "净利率", "#f58518", 0),
-        ("operating_margin", "营业利润率", "#54a24b", 1),
+        ("gross_margin", "毛利率", FIRM, -1),
+        ("net_margin", "净利率", FLAG, 0),
+        ("operating_margin", "营业利润率", UP, 1),
     ]
     for col, label, color, shift in specs:
         if col not in frame.columns:
             continue
         vals = pd.to_numeric(frame[col], errors="coerce") * 100
-        ax.bar(x + shift * width, vals.to_numpy(dtype=float), width, label=label, color=color)
+        ax.bar(x + shift * width, vals.to_numpy(dtype=float), width, label=label, color=color, linewidth=0)
     ax.set_xticks(x, industries)
-    ax.set_ylabel("%")
-    ax.set_title(_margins_title(frame), fontsize=11, fontweight="bold")
-    ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
+    ax.set_ylabel("%", fontsize=8)
+    ax.axhline(0, color=RULE, linewidth=0.8)
+    restyle(ax)
+    ax.legend(fontsize=7.5, loc="lower right")
+
+
+def plot_industry_margins(labeled, output_dir):
+    plt = _mpl()
+    frame = industry_margin_frame(labeled)
+    if frame.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    _draw_margins(ax, frame)
+    set_panel(ax, title=_margins_title(frame), kicker="1  怎么赚钱")
     path = os.path.join(output_dir, MARGINS_CHART)
     _save_fig(path, fig)
     return path
+
+
+def plot_industry_board(labeled, summary, output_dir):
+    """One-page industry tearsheet across the four questions."""
+    plt = _mpl()
+    from matplotlib.gridspec import GridSpec
+    from matplotlib.lines import Line2D
+
+    n = len(labeled) if labeled is not None else 0
+    counts = labeled["industry"].value_counts() if labeled is not None and "industry" in labeled.columns else {}
+    bits = [f"{g} {int(counts.get(g, 0))}" for g in GROUP_ORDER]
+    fig = plt.figure(figsize=(15.4, 10.6))
+    gs = GridSpec(2, 3, figure=fig, hspace=0.55, wspace=0.35, left=0.055, right=0.97, top=0.84, bottom=0.07)
+    fig.text(0.055, 0.945, "行业画像", fontsize=18, color=INK, fontweight="bold")
+    fig.text(0.055, 0.912, f"样本 {n} 家  |  " + "  |  ".join(bits), fontsize=10, color=MUTED)
+    fig.add_artist(Line2D([0.055, 0.97], [0.895, 0.895], transform=fig.transFigure, color=RULE, lw=0.8))
+
+    ax = fig.add_subplot(gs[0, 0])
+    margin_frame = industry_margin_frame(labeled)
+    _draw_margins(ax, margin_frame)
+    set_panel(ax, title=_margins_title(margin_frame), kicker="1  怎么赚钱")
+
+    ax = fig.add_subplot(gs[0, 1])
+    data = [_boxplot_series(labeled, g, "gross_margin") for g in GROUP_ORDER]
+    _style_boxplot(ax, data, "%", as_pct=True)
+    set_panel(ax, title=boxplot_conclusion(labeled, "gross_margin"), kicker="1  怎么赚钱")
+
+    ax = fig.add_subplot(gs[0, 2])
+    data = [_boxplot_series(labeled, g, "accruals_to_revenue") for g in GROUP_ORDER]
+    _style_boxplot(ax, data, "%", as_pct=True)
+    set_panel(ax, title=boxplot_conclusion(labeled, "accruals_to_revenue"), kicker="2  利润真不真")
+
+    ax = fig.add_subplot(gs[1, 0])
+    _draw_cash_gap(ax, cash_sign_frame(summary))
+    set_panel(ax, title=_cash_sign_title(cash_sign_frame(summary)), kicker="2  利润真不真")
+
+    ax = fig.add_subplot(gs[1, 1])
+    _draw_wc_cycle(ax, wc_bar_frame(summary))
+    set_panel(ax, title=_wc_cycle_title(wc_bar_frame(summary)), kicker="4  营运与现金")
+
+    ax = fig.add_subplot(gs[1, 2])
+    data = [_boxplot_series(labeled, g, "dso") for g in GROUP_ORDER]
+    _style_boxplot(ax, data, "天")
+    set_panel(ax, title=boxplot_conclusion(labeled, "dso"), kicker="4  营运与现金")
+
+    path = os.path.join(output_dir, BOARD_CHART)
+    return _save_fig(path, fig)
 
 
 def load_or_build_metrics(metrics_path, csv_dir):
@@ -1083,9 +1179,20 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
     assoc = pairwise_spearman(labeled)
 
     assign_path = os.path.join(output_dir, ASSIGN_NAME)
-    labeled[["stock_code", "company_name", "year", "industry", "industry_raw"]].to_csv(
-        assign_path, index=False, encoding="utf-8-sig"
-    )
+    assign_cols = [
+        col
+        for col in (
+            "stock_code",
+            "company_name",
+            "year",
+            "industry",
+            "industry_raw",
+            "sector",
+            "sector_label",
+        )
+        if col in labeled.columns
+    ]
+    labeled[assign_cols].to_csv(assign_path, index=False, encoding="utf-8-sig")
     med_path = os.path.join(output_dir, MEDIANS_NAME)
     summary.to_csv(med_path, index=False, encoding="utf-8-sig")
     cov_path = os.path.join(output_dir, COVERAGE_NAME)
@@ -1111,12 +1218,14 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
     cash_path = None
     margin_path = None
     sens_chart = None
+    board_path = None
     try:
         box_paths = plot_boxplots(labeled, output_dir)
         wc_path = plot_wc_cycle(summary, output_dir)
         cash_path = plot_cash_gap(summary, output_dir)
         margin_path = plot_industry_margins(labeled, output_dir)
         sens_chart = plot_sensitivity(sensitivity, output_dir)
+        board_path = plot_industry_board(labeled, summary, output_dir)
     except Exception as exc:
         print(f"industry charts skipped: {exc}")
 
@@ -1136,6 +1245,8 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
         print(f"wrote {margin_path}")
     if sens_chart:
         print(f"wrote {sens_chart}")
+    if board_path:
+        print(f"wrote {board_path}")
     if report_path:
         print(f"wrote {report_path}")
     return summary

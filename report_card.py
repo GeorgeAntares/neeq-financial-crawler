@@ -355,7 +355,7 @@ def render_card(row, medians=None):
         "",
         "单期年报没有三年毛利率/净利率波动，可持续性只能看到当年周转和同比。",
         "",
-        "同目录图（缺科目跳过该柱，不用 0 填）：利润瀑布、现金流三分类、杜邦三因子、同行毛利率、红旗色块、当期 KPI。",
+        "同目录一页纸 `*_card.png`（缺科目跳过该柱，不用 0 填）：KPI、利润瀑布、现金流三分类、杜邦对照、营运天数、红旗。",
         "",
         "## 红旗",
         "",
@@ -418,8 +418,8 @@ def render_index(labeled, coverage, flags, medians, examples):
         "存贷双高、其他应收、商誉、本业比、收现率、利息保障只在科目齐全时评价。",
         "",
         "复现：`python company_metrics.py` 然后 `python report_card.py`。",
-        "单家 markdown 与截面图在 `output/analysis/report_cards/`（gitignored）。",
-        "一张图一个问题：利润瀑布、现金流三分类、杜邦三因子、同行条形、红旗色块；图题写成结论。",
+        "单家 markdown 与一页纸图在 `output/analysis/report_cards/`（gitignored）。",
+        "每家一张 `*_card.png`：KPI、利润瀑布、现金流三分类、杜邦对照、营运天数、红旗。",
         "",
         "## 科目覆盖",
         "",
@@ -496,34 +496,27 @@ def _flag_rate_title(flags):
 
 
 def plot_flag_rates(flags, output_dir):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from chart_theme import FIRM, RULE, group_color, restyle, save_fig, set_panel, use_mpl
 
-    matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
-
+    _, plt = use_mpl()
     work = flags[(flags["flag"] != "firms") & (flags["industry"].isin(GROUP_ORDER))]
     if work.empty:
         work = flags[(flags["flag"] != "firms") & (flags["industry"] == "合计")]
         if work.empty:
             return None
         fig, ax = plt.subplots(figsize=(8, 4.5))
-        ax.barh(work["label"], work["share_of_group"] * 100, color="#4c78a8")
+        ax.barh(work["label"], work["share_of_group"] * 100, color=FIRM, linewidth=0)
+        restyle(ax)
+        set_panel(ax, title=_flag_rate_title(flags), kicker="3  会不会被困住", ylabel=None)
         ax.set_xlabel("占样本 %")
-        ax.set_title(_flag_rate_title(flags))
-        fig.tight_layout()
         path = os.path.join(output_dir, FLAGS_CHART)
-        fig.savefig(path, dpi=120)
-        plt.close(fig)
-        return path
+        return save_fig(fig, path)
 
     labels = [lab for _, lab, _ in FLAG_LABELS]
     industries = [g for g in GROUP_ORDER if g in set(work["industry"])]
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(10.4, 5))
     x = np.arange(len(labels))
-    width = 0.25
-    colors = ["#4c78a8", "#f58518", "#54a24b"]
+    width = 0.24
     for i, industry in enumerate(industries):
         part = work[work["industry"] == industry].set_index("flag")
         vals = []
@@ -531,17 +524,16 @@ def plot_flag_rates(flags, output_dir):
             if col in part.index:
                 vals.append(float(part.loc[col, "share_of_group"]) * 100)
             else:
-                vals.append(0.0)
-        ax.bar(x + (i - 1) * width, vals, width, label=industry, color=colors[i % len(colors)])
-    ax.set_xticks(x, labels, rotation=20, ha="right")
+                vals.append(np.nan)
+        ax.bar(x + (i - 1) * width, vals, width, label=industry, color=group_color(industry), linewidth=0)
+    ax.set_xticks(x, labels, rotation=18, ha="right")
     ax.set_ylabel("占该行业 %")
-    ax.set_title(_flag_rate_title(flags))
-    ax.legend()
-    fig.tight_layout()
+    ax.axhline(0, color=RULE, linewidth=0.8)
+    restyle(ax)
+    ax.legend(loc="upper right")
+    set_panel(ax, title=_flag_rate_title(flags), kicker="3  会不会被困住")
     path = os.path.join(output_dir, FLAGS_CHART)
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    return path
+    return save_fig(fig, path)
 
 
 def write_firm_cards(labeled, medians, cards_dir):
@@ -594,6 +586,9 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
             "company_name",
             "year",
             "industry",
+            "industry_raw",
+            "sector",
+            "sector_label",
             "revenue",
             "net_profit",
             "ocf",
@@ -665,6 +660,15 @@ def main(metrics_path=None, csv_dir=None, pdf_dir=None, output_dir=None, report_
             )
             if grid:
                 print(f"wrote {grid}")
+            from chart_catalog import organize_charts
+
+            dest = organize_charts(
+                output_dir,
+                pdf_root=pdf_dir,
+                firm_codes=example_codes,
+            )
+            if dest:
+                print(f"wrote chart catalog under {dest}")
         except Exception as exc:
             print(f"firm charts skipped: {exc}")
 
