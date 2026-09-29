@@ -66,6 +66,21 @@
 | `accounts_payable` | 期末应付账款 | 「应付账款」 |
 | `ocf` | 本期经营现金流净额 | 「经营活动产生的现金流量净额」 |
 | `ocf_prior` | 上期经营现金流净额 | 同上，上期金额列 |
+| `cash` | 期末货币资金 | 「货币资金」 |
+| `st_borrowings` | 期末短期借款 | 「短期借款」 |
+| `current_portion_ltd` | 一年内到期的非流动负债 | 「一年内到期的非流动负债」 |
+| `st_interest_bearing` | 有息短债 | 短期借款 + 一年内到期；两项都缺则为缺失，不按 0 |
+| `other_receivables` | 其他应收款 | 「其他应收款」（不含其中：应收利息） |
+| `prepayments` | 预付款项 | 「预付款项」 |
+| `goodwill` | 商誉 | 「商誉」；空单元格保持缺失，不记 0 |
+| `contract_liabilities` | 合同负债 | 「合同负债」 |
+| `advances_from_customers` | 预收 | 「预收款项」/「预收账款」 |
+| `customer_advances` | 合同负债 + 预收 | 两项都缺则为缺失 |
+| `operating_profit` | 营业利润 | 「三、营业利润（亏损以…）」 |
+| `selling_expense` / `admin_expense` / `rd_expense` / `finance_expense` | 销售 / 管理 / 研发 / 财务费用 | 对应科目；「其中」行不算 |
+| `interest_expense` | 利息费用 | 优先「其中：利息费用」 |
+| `non_operating_income` | 营业外收入 | 「营业外收入」 |
+| `sales_cash` | 销售商品收现 | 「销售商品、提供劳务收到的现金」 |
 | `avg_assets` | 平均资产 | 期初、期末都有则取平均，否则用期末 |
 | `avg_equity` | 平均权益 | 同上 |
 
@@ -82,6 +97,14 @@
 | `ocf_missing_kind` | `present` / `truncated` / `no_statement` |
 | `inventory_status` | `positive` / `zero` / `missing` |
 | `dso_anomalous` / `dio_anomalous` / `dpo_anomalous` | 天数 > 730 或 < 0 |
+| `goodwill_status` | `positive` / `zero` / `missing`（空单元格是 missing） |
+| `flag_cash_debt_high` | 存贷双高：货币资金/资产 ≥ 20% 且 短债/资产 ≥ 20%；科目缺则为空 |
+| `flag_other_receivables` | 其他应收/资产 ≥ 10% |
+| `flag_goodwill` | 商誉/资产 ≥ 10%（仅商誉有数时评价） |
+| `flag_core_profit_off` | 本业比落在 90%–110% 之外 |
+| `flag_cash_conversion_low` | 收现率 < 80% |
+| `flag_interest_cover_weak` | 利息保障倍数 < 2 |
+| `n_red_flags` | 上面六项为真的个数（缺科目不计入） |
 
 ## 比率、天数与同比（原始列）
 
@@ -108,6 +131,21 @@
 | `revenue_yoy` | `(revenue - revenue_prior) / \|revenue_prior\|` | 上期为 0 则缺失 |
 | `net_profit_yoy` | `(net_profit - net_profit_prior) / \|net_profit_prior\|` | |
 | `ocf_yoy` | `(ocf - ocf_prior) / \|ocf_prior\|` | |
+| `roa` | `net_profit / avg_assets` | 平均资产 ≤ 0 则缺失 |
+| `operating_margin` | `operating_profit / revenue` | |
+| `core_profit_ratio` | `operating_profit / (operating_profit + non_operating_income)` | 营业外收入缺行按 0；营业利润缺则本业比缺 |
+| `sga_to_revenue` | `(selling + admin) / revenue` | 销售或管理缺一项则缺失 |
+| `rd_to_revenue` / `finance_to_revenue` | 研发或财务费用 / 营收 | |
+| `cash_to_assets` | `cash / total_assets` | |
+| `st_debt_to_assets` | `st_interest_bearing / total_assets` | |
+| `cash_ratio` | `cash / current_liabilities` | 现金比率 |
+| `quick_ratio` | `(current_assets - inventory) / current_liabilities` | 存货缺行则速动比率缺失 |
+| `other_receivables_to_assets` | `other_receivables / total_assets` | |
+| `goodwill_to_assets` | `goodwill / total_assets` | |
+| `prepayments_to_assets` | `prepayments / total_assets` | |
+| `customer_advances_to_revenue` | `customer_advances / revenue` | |
+| `cash_conversion` | `sales_cash / revenue` | 收现率 |
+| `interest_coverage` | `operating_profit / interest_expense` | 利息费用 ≤ 0 或缺失则为缺 |
 
 `*_w` 是对应列在有效营收样本上的 1% / 99% 分位截尾。核对单家公司请看无 `_w` 的原始列。行业画像和杜邦的**主口径**用带质量标记的原始列（天数再加 730 天帽）；IQR 剔除和 `*_w` 只出现在稳健表里，不替换主中位数。每个问题各自完整个案，不把 195 家硬删成一张表。
 
@@ -117,5 +155,6 @@
 
 - 不少利润表第一张表在「净利润」行之前被截断，`net_profit` 覆盖会低于营收覆盖。不把母公司净利润拼到合并营收上。
 - 现金流量表同样可能缺「经营活动产生的现金流量净额」。
-- 单期年报：同比来自表内上期列，不是多年面板。
+- 单期年报：同比来自表内上期列，不是多年面板。没有三年毛利率/净利率稳定性，也没有审计意见。
 - PDF 集合里可能混入非新三板代码；本表不按板块过滤。
+- 公司报告卡：`python report_card.py`，底稿 `company_report_cards.md`，单家文件在 `output/analysis/report_cards/`。

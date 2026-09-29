@@ -63,6 +63,12 @@ EXAM_COLS = [
     "ar_to_revenue",
     "inventory_to_revenue",
     "ocf_to_revenue",
+    "cash_conversion",
+    "core_profit_ratio",
+    "cash_ratio",
+    "operating_margin",
+    "other_receivables_to_assets",
+    "interest_coverage",
 ]
 
 SCALE_COLS = [
@@ -182,6 +188,24 @@ def missing_policy_table(frame):
             "economic_cap",
             "flag_exclude_from_median",
             "天数 > 730 视为异常周转，中位数不用这些点；原始值保留。",
+        ),
+        (
+            "cash",
+            "row_absent",
+            "keep_nan",
+            "货币资金空单元格保持缺失，不按 0 填。",
+        ),
+        (
+            "operating_profit",
+            "parser_truncation_or_absent",
+            "keep_nan",
+            "营业利润与净利润一样可能被第一张表截断，不填。",
+        ),
+        (
+            "sales_cash",
+            "row_absent",
+            "keep_nan",
+            "销售商品收现缺行则收现率缺失，不用 0。",
         ),
     ]
     rows = []

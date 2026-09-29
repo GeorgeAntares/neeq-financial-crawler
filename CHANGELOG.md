@@ -15,6 +15,7 @@ All notable changes follow Semantic Versioning and Keep a Changelog.
 
 ### Added / 新增
 
+- 首块合并表补抽货币资金、短债、其他应收、商誉、合同负债/预收、营业利润、三费、利息、销售商品收现；公司四段报告卡 `report_card.py`（偿债 / 盈利 / 营运 / 现金流），红旗：存贷双高、其他应收、商誉、本业比、收现率、利息保障 / Extra first-block line items and firm-level four-section report cards (`report_card.py`) with cash-and-debt, other-receivables, goodwill, core-profit, cash-conversion, and interest-cover flags
 - `company_metrics_quality.csv` 以及 DSO、DIO、DPO、现金周期、应计/收入列 / Quality-flag summary plus DSO, DIO, DPO, CCC, and accruals-to-revenue
 - `preprocess.py`：竞赛顺序的字段体检、缺失机制表、IQR 离群计数、1%/99% 缩尾对照、Z-score/Min-Max 副本和处理前后图 / Contest-style preprocess log: field exam, missing-mechanism table, IQR outlier counts, winsorize comparison, scaling copy, before/after chart
 - 行业覆盖表、稳健表与对照图：`industry_coverage.csv` / `industry_sensitivity.csv` / `industry_sensitivity.png`，杜邦 `dupont_coverage.csv` / `dupont_sensitivity.csv` / Coverage and robustness tables for industry portraits and DuPont

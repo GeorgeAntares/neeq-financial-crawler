@@ -9,9 +9,14 @@ from company_metrics import (
     add_ratios_and_flags,
     build_company_metrics,
     quality_summary,
+    score_cash,
     score_equity,
+    score_interest_expense,
     score_net_profit,
+    score_operating_profit,
+    score_other_receivables,
     score_revenue,
+    score_sales_cash,
     winsorize_series,
     yoy,
 )
@@ -35,12 +40,20 @@ class CompanyMetricsTest(unittest.TestCase):
                     ["其中：营业收入", 1_000_000, 800_000],
                     ["其中：营业成本", 400_000, 350_000],
                     ["二、营业总成本", 700_000, 600_000],
+                    ["销售费用", 10_000, 8_000],
+                    ["管理费用", 20_000, 18_000],
+                    ["研发费用", 5_000, 4_000],
+                    ["财务费用", 3_000, 2_500],
+                    ["其中：利息费用", 2_500, 2_000],
+                    ["三、营业利润（亏损以“-”号填列）", 120_000, 60_000],
+                    ["加：营业外收入", 5_000, 1_000],
                     ["五、净利润（净亏损以“－”号填列）", 100_000, 50_000],
                     ["1.持续经营净利润（净亏损以“-”号填列）", 100_000, 50_000],
                     ["2.归属于母公司所有者的净利润", 80_000, 40_000],
                     ["项目", "", ""],
                     ["一、营业收入", 10_000, 9_000],
                     ["减：营业成本", 1_000, 900],
+                    ["三、营业利润（亏损以“-”号填列）", 1, 1],
                     ["四、净利润（净亏损以“-”号填列）", 1, 1],
                 ],
                 ["项目", "本期金额", "上期金额"],
@@ -50,16 +63,25 @@ class CompanyMetricsTest(unittest.TestCase):
                 "430001_测试_2025_合并资产负债表.csv",
                 [
                     ["项目", "", ""],
+                    ["货币资金", 200_000, 180_000],
                     ["流动资产合计", 500_000, 450_000],
                     ["应收账款", 120_000, 100_000],
+                    ["预付款项", 10_000, 8_000],
+                    ["其他应收款", 5_000, 4_000],
                     ["存货", 80_000, 70_000],
+                    ["商誉", "", ""],
                     ["资产总计", 1_000_000, 900_000],
+                    ["短期借款", 80_000, 70_000],
                     ["流动负债合计", 250_000, 200_000],
                     ["应付账款", 50_000, 40_000],
+                    ["预收款项", 1_000, 800],
+                    ["合同负债", 4_000, 3_000],
+                    ["一年内到期的非流动负债", 20_000, 15_000],
                     ["负债合计", 400_000, 350_000],
                     ["所有者权益（或股东权益）合计", 600_000, 550_000],
                     ["负债和所有者权益（或股东权益）总计", 1_000_000, 900_000],
                     ["项目", "", ""],
+                    ["货币资金", 1, 1],
                     ["资产总计", 50_000, 40_000],
                     ["所有者权益合计", 10_000, 8_000],
                 ],
@@ -70,9 +92,11 @@ class CompanyMetricsTest(unittest.TestCase):
                 "430001_测试_2025_合并现金流量表.csv",
                 [
                     ["项目", "", ""],
+                    ["销售商品、提供劳务收到的现金", 900_000, 700_000],
                     ["经营活动产生的现金流量净额", 40_000, 20_000],
                     ["投资活动产生的现金流量净额", -10_000, -5_000],
                     ["项目", "", ""],
+                    ["销售商品、提供劳务收到的现金", 1, 1],
                     ["经营活动产生的现金流量净额", 999, 1],
                 ],
                 ["项目", "本期金额", "上期金额"],
@@ -118,6 +142,21 @@ class CompanyMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(row["revenue_yoy"], 0.25)
         self.assertAlmostEqual(row["net_profit_yoy"], 1.0)
         self.assertAlmostEqual(row["ocf_yoy"], 1.0)
+        self.assertEqual(row["cash"], 200_000)
+        self.assertEqual(row["operating_profit"], 120_000)
+        self.assertEqual(row["sales_cash"], 900_000)
+        self.assertEqual(row["interest_expense"], 2_500)
+        self.assertEqual(row["st_interest_bearing"], 100_000)
+        self.assertEqual(row["customer_advances"], 5_000)
+        self.assertTrue(pd.isna(row["goodwill"]))
+        self.assertEqual(row["goodwill_status"], "missing")
+        self.assertAlmostEqual(row["core_profit_ratio"], 120_000 / 125_000)
+        self.assertAlmostEqual(row["cash_conversion"], 0.9)
+        self.assertAlmostEqual(row["sga_to_revenue"], 0.03)
+        self.assertAlmostEqual(row["interest_coverage"], 120_000 / 2_500)
+        self.assertAlmostEqual(row["quick_ratio"], (500_000 - 80_000) / 250_000)
+        self.assertFalse(bool(row["flag_cash_debt_high"]))
+        self.assertFalse(bool(row["flag_cash_conversion_low"]))
 
     def test_drops_tiny_revenue_and_does_not_use_total_cost_for_gm(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -167,6 +206,15 @@ class CompanyMetricsTest(unittest.TestCase):
         self.assertEqual(score_equity("负债和所有者权益（或股东权益）总计"), 0)
         self.assertEqual(score_equity("所有者权益（或股东权益）："), 0)
         self.assertGreater(score_equity("所有者权益（或股东权益）合计"), score_equity("归属于母公司所有者权益合计"))
+        self.assertEqual(score_cash("货币资金"), 1)
+        self.assertEqual(score_cash("其中：货币资金"), 0)
+        self.assertEqual(score_other_receivables("其他应收款"), 1)
+        self.assertEqual(score_other_receivables("其中：应收利息"), 0)
+        self.assertGreater(score_operating_profit("三、营业利润（亏损以“-”号填列）"), 0)
+        self.assertEqual(score_operating_profit("营业利润率"), 0)
+        self.assertGreater(score_interest_expense("其中：利息费用"), score_interest_expense("利息费用"))
+        self.assertEqual(score_interest_expense("利息收入"), 0)
+        self.assertGreater(score_sales_cash("销售商品、提供劳务收到的现金"), 0)
 
     def test_quality_flags_equity_inventory_dso_articulation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -294,6 +342,96 @@ class CompanyMetricsTest(unittest.TestCase):
         self.assertTrue(out["bs_articulation_ok"])
         self.assertAlmostEqual(out["ccc"], out["dso"] + out["dio"] - out["dpo"])
         self.assertAlmostEqual(out["accruals_to_revenue"], 0.02)
+
+    def test_red_flags_keep_missing_not_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            write_csv(
+                temp_dir,
+                "430020_红旗_2025_合并利润表.csv",
+                [
+                    ["一、营业总收入", 1_000_000, 800_000],
+                    ["其中：营业成本", 400_000, 350_000],
+                    ["销售费用", 50_000, 40_000],
+                    ["管理费用", 40_000, 30_000],
+                    ["三、营业利润（亏损以“-”号填列）", 10_000, 8_000],
+                    ["加：营业外收入", 20_000, 5_000],
+                    ["其中：利息费用", 8_000, 7_000],
+                    ["五、净利润（净亏损以“－”号填列）", 8_000, 6_000],
+                ],
+                ["项目", "本期金额", "上期金额"],
+            )
+            write_csv(
+                temp_dir,
+                "430020_红旗_2025_合并资产负债表.csv",
+                [
+                    ["货币资金", 400_000, 350_000],
+                    ["应收账款", 50_000, 40_000],
+                    ["其他应收款", 150_000, 120_000],
+                    ["存货", 20_000, 18_000],
+                    ["商誉", 200_000, 200_000],
+                    ["资产总计", 1_000_000, 900_000],
+                    ["短期借款", 250_000, 200_000],
+                    ["一年内到期的非流动负债", 50_000, 40_000],
+                    ["流动负债合计", 400_000, 350_000],
+                    ["负债合计", 400_000, 350_000],
+                    ["所有者权益（或股东权益）合计", 600_000, 550_000],
+                ],
+                ["项目", "期末余额", "期初余额"],
+            )
+            write_csv(
+                temp_dir,
+                "430020_红旗_2025_合并现金流量表.csv",
+                [
+                    ["销售商品、提供劳务收到的现金", 500_000, 400_000],
+                    ["经营活动产生的现金流量净额", 9_000, 7_000],
+                ],
+                ["项目", "本期金额", "上期金额"],
+            )
+            write_csv(
+                temp_dir,
+                "430021_缺存货_2025_合并利润表.csv",
+                [
+                    ["一、营业总收入", 500_000, 400_000],
+                    ["其中：营业成本", 200_000, 180_000],
+                    ["五、净利润（净亏损以“－”号填列）", 20_000, 10_000],
+                ],
+                ["项目", "本期金额", "上期金额"],
+            )
+            write_csv(
+                temp_dir,
+                "430021_缺存货_2025_合并资产负债表.csv",
+                [
+                    ["货币资金", 80_000, 70_000],
+                    ["流动资产合计", 200_000, 180_000],
+                    ["资产总计", 400_000, 380_000],
+                    ["流动负债合计", 100_000, 90_000],
+                    ["负债合计", 150_000, 140_000],
+                    ["所有者权益（或股东权益）合计", 250_000, 240_000],
+                ],
+                ["项目", "期末余额", "期初余额"],
+            )
+            metrics = build_company_metrics(temp_dir)
+
+        by_code = metrics.set_index("stock_code")
+        flagged = by_code.loc["430020"]
+        self.assertTrue(bool(flagged["flag_cash_debt_high"]))
+        self.assertTrue(bool(flagged["flag_other_receivables"]))
+        self.assertTrue(bool(flagged["flag_goodwill"]))
+        self.assertTrue(bool(flagged["flag_core_profit_off"]))
+        self.assertTrue(bool(flagged["flag_cash_conversion_low"]))
+        self.assertTrue(bool(flagged["flag_interest_cover_weak"]))
+        self.assertGreaterEqual(int(flagged["n_red_flags"]), 6)
+        self.assertAlmostEqual(flagged["core_profit_ratio"], 10_000 / 30_000)
+        self.assertAlmostEqual(flagged["cash_conversion"], 0.5)
+        self.assertAlmostEqual(flagged["interest_coverage"], 10_000 / 8_000)
+
+        missing_inv = by_code.loc["430021"]
+        self.assertEqual(missing_inv["inventory_status"], "missing")
+        self.assertTrue(pd.isna(missing_inv["quick_ratio"]))
+        self.assertTrue(pd.isna(missing_inv["st_interest_bearing"]))
+        self.assertTrue(pd.isna(missing_inv["goodwill"]))
+        self.assertTrue(pd.isna(missing_inv["flag_cash_debt_high"]))
+        self.assertTrue(pd.isna(missing_inv["interest_coverage"]))
 
     def test_main_guard_present(self):
         text = Path(__file__).resolve().parents[1].joinpath("company_metrics.py").read_text(encoding="utf-8")
