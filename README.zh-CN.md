@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/GeorgeAntares/neeq-financial-data-pipeline/actions/workflows/test.yml"><img src="https://github.com/GeorgeAntares/neeq-financial-data-pipeline/actions/workflows/test.yml/badge.svg" alt="tests"></a>
-  <img src="https://img.shields.io/badge/Version-0.2.0-blue?logo=git&logoColor=white" alt="Version">
+  <img src="https://img.shields.io/badge/Version-0.3.0-blue?logo=git&logoColor=white" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.9+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
 </p>
@@ -21,7 +21,7 @@
 - 三级 PDF 解析：pdfplumber → PyMuPDF → RapidOCR
 - 文本层起始页定位（跳过管理层分析 / 审计封面，丢掉附注列）
 - 导出合并资产负债表、利润表、现金流量表 CSV
-- 公司级指标、三类行业画像、杜邦 / PCA、公司四段报告卡（一问一图）、以及「利润为正且 OCF 为负」分类
+- 公司级指标、三类行业画像、杜邦 / PCA、公司一页纸报告卡、以及「利润为正且 OCF 为负」分类
 
 默认数据源是 **NEEQ**。巨潮请加 `--source cninfo`。
 
@@ -110,7 +110,7 @@ pdfplumber（文本层）→ PyMuPDF（备用文本）→ RapidOCR（页面截�
 
 ## 分析与模型
 
-完整报告：[`ANALYSIS_REPORT.md`](ANALYSIS_REPORT.md)。指标公式：[`company_metrics_dictionary.md`](company_metrics_dictionary.md)。
+完整报告：[`ANALYSIS_REPORT.md`](ANALYSIS_REPORT.md)。指标公式：[`company_metrics_dictionary.md`](company_metrics_dictionary.md)。后续方向：[`ROADMAP.md`](ROADMAP.md)。
 
 新解析器约 255 套 CSV（只取第一张合并表，营收 ≥ 10 万元）。**预处理不是一次筛选**：解析截断、营收门槛、报表质量标记、分位截尾是四层。
 
@@ -141,7 +141,7 @@ python csv_to_pdf.py
 
 旧脚本仍用 **OCF>0 且现金净增加>0** 加现金流科目（542 家，5 折 ROC-AUC ≈ 0.62）。那是对照实验，不是信用评级。
 
-`output/analysis/` 已 gitignore。仓库里的文字底稿：`preprocess.md`、`industry_portrait.md`、`dupont_pca.md`、`cash_gap_model.md`、`company_report_cards.md`。
+`output/analysis/` 已 gitignore。仓库里的文字底稿：`preprocess.md`、`industry_portrait.md`、`dupont_pca.md`、`cash_gap_model.md`、`company_report_cards.md`、`ROADMAP.md`。
 
 ## 目录
 
@@ -169,9 +169,11 @@ neeq-financial-data-pipeline/
 ├── report_card.py
 ├── report_charts.py
 ├── chart_catalog.py
+├── chart_theme.py
 ├── company_report_cards.md
 ├── ANALYSIS_REPORT.md
 ├── ANALYSIS_README.md
+├── ROADMAP.md
 ├── ml_financial_health.py
 ├── ml_evaluation.py
 ├── shap_analysis.py
@@ -205,7 +207,7 @@ CI 在 Python 3.11 上跑同一命令（不安 `torch`）。
 - 少数扫描件 / 图片表仍需 RapidOCR；没装 OCR 时这些表会被跳过
 - 附注仍可能混进报表；分析会优先主表行并跳过「其中：」明细
 - 磁盘上的 CSV 可能是新旧解析器混着的，需要重导出才会统一
-- 分析是单期截面，制造业偏多，没有违约标签
+- 分析是单期截面，制造业偏多，没有违约标签；后续三条轴见 [`ROADMAP.md`](ROADMAP.md)
 - OCR 大约 1–2 秒/页
 
 ## 许可

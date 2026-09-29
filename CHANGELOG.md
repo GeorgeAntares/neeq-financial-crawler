@@ -5,6 +5,11 @@ All notable changes follow Semantic Versioning and Keep a Changelog.
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-09-29
+
+竞赛口径预处理与分问题分析收口：质量标记、营运资金 / 应计 / 行业杜邦，公司四段报告卡改为一页纸。后续三条轴写在 `ROADMAP.md`，等抉择。未升 1.0.0：仍是单期 195 家，解析也不是全量可用。  
+Contest-style preprocess and question-led analysis: quality flags, working-capital / accruals / industry DuPont, and one-pager firm cards. Next three axes live in `ROADMAP.md`. Not 1.0.0: still a single-year 195-firm sample, and the parser is not fully re-exported.
+
 ### Changed / 变更
 
 - 报表预处理改为质量标记，而不是再筛一批公司：资产负债表勾稽、毛利只认营业成本、负权益冻结 ROE/乘数、存货 0 与缺行分开、净利润截断 vs 无表、DSO/DIO/DPO 超过 730 天打帽 / Statement preprocessing is now quality flags (BS articulation, COGS-only gross margin, freeze ROE on non-positive equity, inventory 0 vs missing, truncation vs absent statement, DSO/DIO/DPO caps at 730 days)
@@ -15,6 +20,7 @@ All notable changes follow Semantic Versioning and Keep a Changelog.
 
 ### Added / 新增
 
+- 后续方向 `ROADMAP.md`：数据 / 问题 / 呈现三条轴，选定后再施工 / `ROADMAP.md` lists three next axes (data, questions, presentation) to choose before more work
 - 公司报告卡改为一页纸 tearsheet（`*_card.png`），行业总图 `industry_board.png`；`chart_catalog.py` 按四问归类并把 CSRC 门类从「其他」里拆开。默认不再写单家六张散图。 / Firm cards are one tearsheet; industry has a one-page board; `chart_catalog.py` files charts by the four questions and unpacks CSRC sectors inside 其他. The six-file firm set is no longer written by default.
 - 报告卡截面图：单家利润瀑布、现金流三分类、杜邦三因子、同行条形、红旗色块、当期 KPI（`report_charts.py`）；行业画像拆成一问一图，图题写成结论；营运资金柱不再把缺失中位数画成 0。投资/筹资净额并进公司宽表。 / Cross-section charts for firm cards (P&L waterfall, OCF/ICF/FCF, DuPont three-factor, named peers, flag color table) and one-question industry figures with conclusion titles; WC bars no longer 0-fill missing medians. ICF/FCF join the company wide table.
 - 首块合并表补抽货币资金、短债、其他应收、商誉、合同负债/预收、营业利润、三费、利息、销售商品收现；公司四段报告卡 `report_card.py`（偿债 / 盈利 / 营运 / 现金流），红旗：存贷双高、其他应收、商誉、本业比、收现率、利息保障 / Extra first-block line items and firm-level four-section report cards (`report_card.py`) with cash-and-debt, other-receivables, goodwill, core-profit, cash-conversion, and interest-cover flags
