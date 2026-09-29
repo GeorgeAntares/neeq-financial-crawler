@@ -14,6 +14,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from chart_theme import FIRM, FLAG, INK, MUTED, PEER, RULE, UP, restyle, save_fig, set_panel, use_mpl
 from company_metrics import OUTPUT_DIR_DEFAULT
 from industry_groups import GROUP_MANUFACTURING, GROUP_ORDER, GROUP_SOFTWARE, PDF_DIR_DEFAULT
 from industry_portrait import attach_industry
@@ -579,20 +580,11 @@ def render_report(
 
 
 def _save_fig(path, fig):
-    if os.path.exists(path):
-        os.remove(path)
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    import matplotlib.pyplot as plt
-    plt.close(fig)
+    return save_fig(fig, path)
 
 
 def _mpl():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
+    _, plt = use_mpl()
     return plt
 
 
@@ -639,20 +631,26 @@ def plot_dupont_factors(industry_df, output_dir):
     plt = _mpl()
     frame = factor_bar_frame(industry_df)
     industries = frame["industry"].tolist()
+    specs = [
+        ("median_net_margin", "净利率", True),
+        ("median_asset_turnover", "总资产周转", False),
+        ("median_equity_multiplier", "权益乘数", False),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(11.4, 4.6), sharex=True)
     x = np.arange(len(industries))
-    width = 0.25
-    fig, ax = plt.subplots(figsize=(8, 4.8))
-    nm = pd.to_numeric(frame.get("median_net_margin"), errors="coerce") * 100
-    at = pd.to_numeric(frame.get("median_asset_turnover"), errors="coerce")
-    em = pd.to_numeric(frame.get("median_equity_multiplier"), errors="coerce")
-    ax.bar(x - width, nm.to_numpy(dtype=float), width, label="净利率 (%)", color="#4c78a8")
-    ax.bar(x, at.to_numpy(dtype=float), width, label="总资产周转", color="#f58518")
-    ax.bar(x + width, em.to_numpy(dtype=float), width, label="权益乘数", color="#54a24b")
-    ax.set_xticks(x, industries)
-    ax.set_title(_factors_title(frame), fontsize=11, fontweight="bold")
-    ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
+    colors = [FIRM if g == "制造" else (UP if g == "软件信息" else PEER) for g in industries]
+    for ax, (col, label, as_pct) in zip(axes, specs):
+        vals = pd.to_numeric(frame.get(col), errors="coerce")
+        if as_pct:
+            vals = vals * 100
+        ax.bar(x, vals.to_numpy(dtype=float), color=colors, width=0.62, linewidth=0)
+        ax.set_xticks(x, industries)
+        ax.axhline(0, color=RULE, linewidth=0.8)
+        restyle(ax)
+        unit = "%" if as_pct else "x"
+        ax.set_title(label, loc="left", fontsize=9, color=MUTED, pad=4)
+        ax.set_ylabel(unit, fontsize=8)
+    fig.suptitle(_factors_title(frame), fontsize=12, color=INK, x=0.06, ha="left")
     path = os.path.join(output_dir, FACTORS_CHART)
     _save_fig(path, fig)
     return path
@@ -662,20 +660,23 @@ def plot_spearman(corr, output_dir):
     if corr is None or corr.empty:
         return None
     plt = _mpl()
-    fig, ax = plt.subplots(figsize=(7.5, 6.5))
+    fig, ax = plt.subplots(figsize=(7.6, 6.6))
     im = ax.imshow(corr.to_numpy(), cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
     labels = [CORR_LABELS.get(col, col) for col in corr.columns]
     ax.set_xticks(range(len(labels)), labels, rotation=90, fontsize=8)
     ax.set_yticks(range(len(labels)), labels, fontsize=8)
+    restyle(ax)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
     roe_nm = np.nan
     if "roe" in corr.index and "net_margin" in corr.columns:
         roe_nm = float(corr.loc["roe", "net_margin"])
     if np.isfinite(roe_nm):
-        ax.set_title(f"ROE 与净利率 Spearman {roe_nm:.2f}（完整个案相关阵）", fontweight="bold")
+        title = f"ROE 与净利率 Spearman {roe_nm:.2f}（完整个案相关阵）"
     else:
-        ax.set_title("截面指标 Spearman 相关阵（完整个案）", fontweight="bold")
+        title = "截面指标 Spearman 相关阵（完整个案）"
+    set_panel(ax, title=title, kicker="1  怎么赚钱")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.tight_layout()
     path = os.path.join(output_dir, SPEARMAN_CHART)
     _save_fig(path, fig)
     return path
@@ -683,14 +684,15 @@ def plot_spearman(corr, output_dir):
 
 def plot_figures(corr, load_df, var_df, output_dir):
     plt = _mpl()
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(12.2, 5.1))
 
     if var_df is not None and not var_df.empty:
-        axes[0].bar(var_df["component"].head(6), var_df["explained_ratio"].head(6) * 100, color="#4c78a8")
-        axes[0].plot(var_df["component"].head(6), var_df["cumulative"].head(6) * 100, color="#f58518", marker="o")
-        axes[0].set_ylabel("%")
+        axes[0].bar(var_df["component"].head(6), var_df["explained_ratio"].head(6) * 100, color=FIRM, linewidth=0)
+        axes[0].plot(var_df["component"].head(6), var_df["cumulative"].head(6) * 100, color=FLAG, marker="o", markersize=4)
+        axes[0].set_ylabel("%", fontsize=8)
+        restyle(axes[0])
         pc1 = float(var_df.iloc[0]["explained_ratio"]) * 100 if len(var_df) else np.nan
-        axes[0].set_title(f"PC1 解释 {pc1:.0f}% 方差（附录主成分）", fontweight="bold")
+        axes[0].set_title(f"PC1 解释 {pc1:.0f}% 方差（附录主成分）", loc="left", fontsize=10, color=INK)
     else:
         axes[0].set_visible(False)
 
@@ -701,12 +703,14 @@ def plot_figures(corr, load_df, var_df, output_dir):
         im2 = axes[1].imshow(mat, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
         axes[1].set_xticks(range(len(pc_cols)), pc_cols)
         axes[1].set_yticks(range(len(load_df)), list(load_df["label"]), fontsize=8)
-        axes[1].set_title("PCA 载荷：规模 / 杠杆 / 现金", fontweight="bold")
+        restyle(axes[1])
+        axes[1].spines["left"].set_visible(False)
+        axes[1].spines["bottom"].set_visible(False)
+        axes[1].set_title("PCA 载荷：规模 / 杠杆 / 现金", loc="left", fontsize=10, color=INK)
         fig.colorbar(im2, ax=axes[1], fraction=0.046, pad=0.04)
     else:
         axes[1].set_visible(False)
 
-    fig.tight_layout()
     path = os.path.join(output_dir, CHART_NAME)
     _save_fig(path, fig)
     return path

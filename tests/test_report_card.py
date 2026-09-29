@@ -103,7 +103,8 @@ class ReportCardTest(unittest.TestCase):
         self.assertIn("科目覆盖", index)
         self.assertIn("怎么赚钱", index)
         self.assertIn("缺科目写「缺」", index)
-        self.assertIn("一张图一个问题", index)
+        self.assertIn("*_card.png", index)
+        self.assertIn("一页纸图", index)
 
     def test_main_writes_markdown(self):
         metrics = pd.DataFrame([self._row().to_dict(), self._row(stock_code="430002", company_name="乙").to_dict()])

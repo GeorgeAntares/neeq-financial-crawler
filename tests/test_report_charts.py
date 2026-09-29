@@ -11,6 +11,7 @@ from report_charts import (
     STATE_OFF,
     STATE_ON,
     cash_flow_items,
+    clean_part_charts,
     dupont_compare,
     flag_matrix,
     flag_table_rows,
@@ -183,9 +184,27 @@ class ReportChartsTest(unittest.TestCase):
             except ImportError:
                 self.assertEqual(paths, {})
                 return
+            self.assertIn("card", paths)
+            self.assertTrue(Path(paths["card"]).is_file())
             for key in ("waterfall", "cash", "dupont", "peers", "flags", "kpi"):
-                self.assertIn(key, paths)
-                self.assertTrue(Path(paths[key]).is_file())
+                self.assertNotIn(key, paths)
+            parts = plot_firm_set(labeled.iloc[0], labeled, medians, temp_dir, FLAG_LABELS, write_parts=True)
+            for key in ("card", "waterfall", "cash", "dupont", "peers", "flags", "kpi"):
+                self.assertIn(key, parts)
+                self.assertTrue(Path(parts[key]).is_file())
+
+    def test_clean_part_charts_keeps_card(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "430001_甲_2025_waterfall.png").write_bytes(b"x")
+            (root / "430001_甲_2025_kpi.png").write_bytes(b"x")
+            (root / "430001_甲_2025_card.png").write_bytes(b"x")
+            (root / "430001_甲_2025.md").write_text("ok", encoding="utf-8")
+            n = clean_part_charts(root)
+            self.assertEqual(n, 2)
+            self.assertTrue((root / "430001_甲_2025_card.png").is_file())
+            self.assertTrue((root / "430001_甲_2025.md").is_file())
+            self.assertFalse((root / "430001_甲_2025_waterfall.png").is_file())
 
 
 if __name__ == "__main__":

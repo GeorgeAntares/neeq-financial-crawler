@@ -1,11 +1,12 @@
 """
 Cross-section charts for firm report cards and industry questions.
 
-One chart, one question. Titles are conclusions. Missing stays missing
-(never drawn as 0). Sample is one year plus in-statement prior columns,
-so there are no multi-year margin lines.
+The firm deliverable is one tearsheet (`*_card.png`). Panels still map to
+the four reading questions. Missing stays missing (never drawn as 0).
+Sample is one year plus in-statement prior columns, so there are no
+multi-year margin lines.
 
-Blue = the firm / main series; gray = peers / industry; warm = deterioration.
+Ink blue = the firm; stone = peers / industry; rust = deterioration.
 """
 from __future__ import annotations
 
@@ -14,11 +15,32 @@ import os
 import numpy as np
 import pandas as pd
 
-COLOR_MAIN = "#4c78a8"
-COLOR_PEER = "#9e9e9e"
-COLOR_WORSE = "#e45756"
-COLOR_BETTER = "#54a24b"
-COLOR_NA = "#d9d9d9"
+from chart_theme import (
+    BG,
+    DOWN,
+    FIRM,
+    FLAG,
+    INK,
+    MUTED,
+    NA,
+    PEER,
+    RULE,
+    SURFACE,
+    UP,
+    draw_empty,
+    hide_axes,
+    restyle,
+    save_fig,
+    set_panel,
+    use_mpl,
+)
+
+COLOR_MAIN = FIRM
+COLOR_PEER = PEER
+COLOR_WORSE = DOWN
+COLOR_BETTER = UP
+COLOR_NA = NA
+PART_KINDS = ("kpi", "waterfall", "cash", "dupont", "peers", "flags")
 
 STATE_ON = "on"
 STATE_OFF = "off"
@@ -481,26 +503,6 @@ def grouped_bar_values(frame, columns):
     return out
 
 
-def _use_mpl():
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    return matplotlib, plt
-
-
-def _save(fig, plt, path):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    if os.path.exists(path):
-        os.remove(path)
-    fig.savefig(path, dpi=120, bbox_inches="tight")
-    plt.close(fig)
-    return path
-
-
 def _amount_scale(values):
     finite = [abs(v) for v in values if np.isfinite(v)]
     if not finite:
@@ -513,174 +515,321 @@ def _amount_scale(values):
     return 1.0, "元"
 
 
-def plot_waterfall(steps, title, path):
+def _fmt_scaled(value, scale):
+    if not np.isfinite(value):
+        return ""
+    scaled = value / scale
+    if abs(scaled) >= 100:
+        return f"{scaled:.0f}"
+    if abs(scaled) >= 10:
+        return f"{scaled:.1f}"
+    return f"{scaled:.2f}"
+
+
+def _short_yoy(value):
+    amount = _num(value)
+    if not np.isfinite(amount):
+        return ""
+    sign = "+" if amount >= 0 else ""
+    return f"{sign}{amount * 100:.1f}%"
+
+
+def draw_waterfall(ax, steps):
     if not steps:
-        return None
-    _, plt = _use_mpl()
+        draw_empty(ax, "利润结构缺科目", kicker="1  怎么赚钱")
+        return
     scale, unit = _amount_scale([s["value"] for s in steps])
-    fig, ax = plt.subplots(figsize=(10, 5))
     running = 0.0
+    connectors = []
     for i, step in enumerate(steps):
         val = step["value"] / scale
         if step["kind"] == "total":
             bottom = 0.0 if val >= 0 else val
             height = abs(val)
-            color = COLOR_MAIN
+            color = FIRM
+            end = val
             running = val
         else:
             if val >= 0:
                 bottom = running
                 height = val
-                color = COLOR_BETTER
+                color = UP
             else:
                 bottom = running + val
                 height = -val
-                color = COLOR_WORSE
-            running = running + val
-        ax.bar(i, height, bottom=bottom, color=color, width=0.62, edgecolor="white")
-    ax.set_xticks(range(len(steps)), [s["label"] for s in steps], rotation=22, ha="right")
-    ax.axhline(0, color="#999999", linewidth=0.8)
-    ax.set_ylabel(unit)
-    ax.set_title(title, fontsize=11, fontweight="bold")
-    fig.tight_layout()
-    return _save(fig, plt, path)
+                color = DOWN
+            end = running + val
+            running = end
+        ax.bar(i, height, bottom=bottom, color=color, width=0.62, linewidth=0)
+        label_y = bottom + height
+        ax.text(i, label_y, _fmt_scaled(step["value"], scale), ha="center", va="bottom", fontsize=7, color=MUTED)
+        connectors.append(end)
+    for i in range(len(connectors) - 1):
+        ax.plot([i + 0.31, i + 0.69], [connectors[i], connectors[i]], color=RULE, lw=0.7, zorder=0)
+    ax.set_xticks(range(len(steps)), [s["label"] for s in steps], rotation=25, ha="right")
+    ax.axhline(0, color=RULE, linewidth=0.8)
+    set_panel(ax, ylabel=unit)
+
+
+def draw_cash_three_way(ax, items):
+    if not items:
+        draw_empty(ax, "现金流缺科目", kicker="2  利润真不真")
+        return
+    scale, unit = _amount_scale([it["value"] for it in items])
+    labels = [it["label"] for it in items]
+    values = [it["value"] / scale for it in items]
+    colors = [FIRM if v >= 0 else DOWN for v in values]
+    bars = ax.bar(labels, values, color=colors, width=0.48, linewidth=0)
+    for bar, raw in zip(bars, items):
+        y = bar.get_height()
+        va = "bottom" if y >= 0 else "top"
+        ax.text(bar.get_x() + bar.get_width() / 2, y, _fmt_scaled(raw["value"], scale), ha="center", va=va, fontsize=8, color=MUTED)
+    ax.axhline(0, color=RULE, linewidth=0.8)
+    set_panel(ax, ylabel=unit)
+
+
+def wc_compare_items(row, medians=None):
+    industry = _get(row, "industry", "其他")
+    items = []
+    for field, label in (("dso", "DSO"), ("dio", "DIO"), ("ccc", "现金周期")):
+        firm = _num(_get(row, field))
+        med, n_med = _median_lookup(medians, industry, field)
+        if not np.isfinite(firm) and not np.isfinite(med):
+            continue
+        items.append(
+            {
+                "field": field,
+                "label": label,
+                "firm": firm,
+                "industry": med,
+                "n": n_med,
+                "as_pct": False,
+            }
+        )
+    return items
+
+
+def wc_compare_title(row, items=None):
+    name = firm_label(row)
+    items = items if items is not None else wc_compare_items(row)
+    dso = next((it["firm"] for it in items if it["field"] == "dso"), np.nan)
+    ind = next((it["industry"] for it in items if it["field"] == "dso"), np.nan)
+    if np.isfinite(dso) and np.isfinite(ind):
+        side = "长于" if dso >= ind else "短于"
+        return f"{name}：DSO {side}同业（{dso:.0f} 天 vs {ind:.0f} 天）"
+    return f"{name}：营运天数对照"
+
+
+def draw_dupont(ax, items, empty_message="杜邦因子缺科目", kicker="1  怎么赚钱"):
+    """Three small multiples so % and multiples do not share an axis."""
+    if not items:
+        draw_empty(ax, empty_message, kicker=kicker)
+        return
+    hide_axes(ax)
+    n = len(items)
+    for i, item in enumerate(items):
+        left = i / n + 0.04 / n
+        width = 1 / n - 0.10 / n
+        sub = ax.inset_axes([left, 0.0, width, 0.72])
+        firm = item["firm"]
+        ind = item["industry"]
+        if item["as_pct"]:
+            firm_v = firm * 100 if np.isfinite(firm) else np.nan
+            ind_v = ind * 100 if np.isfinite(ind) else np.nan
+            unit = "%"
+        else:
+            firm_v = firm
+            ind_v = ind
+            unit = "天" if item.get("field") in ("dso", "dio", "ccc") else "x"
+        xs = [0, 1]
+        vals = [firm_v, ind_v]
+        colors = [FIRM, PEER]
+        sub.bar(xs, vals, color=colors, width=0.55, linewidth=0)
+        sub.set_xticks(xs, ["本公司", "行业"], fontsize=7)
+        sub.axhline(0, color=RULE, linewidth=0.6)
+        restyle(sub)
+        shown = firm_v if np.isfinite(firm_v) else ind_v
+        if np.isfinite(shown):
+            if unit == "%":
+                text = f"{shown:.1f}%"
+            elif unit == "天":
+                text = f"{shown:.0f}天"
+            else:
+                text = f"{shown:.2f}x"
+        else:
+            text = "缺"
+        ax.text(left, 0.92, text, transform=ax.transAxes, fontsize=12, color=INK, fontweight="bold")
+        ax.text(left, 0.82, item["label"], transform=ax.transAxes, fontsize=8, color=MUTED)
+
+
+def draw_peer_bars(ax, frame):
+    if frame is None or frame.empty:
+        draw_empty(ax, "同业可比缺科目", kicker="1  怎么赚钱")
+        return
+    names = []
+    for _, row in frame.iterrows():
+        label = str(row["company_name"] or row["stock_code"]).strip()
+        names.append(label)
+    values = frame["value"].to_numpy(dtype=float) * 100.0
+    colors = [FIRM if bool(flag) else PEER for flag in frame["is_self"]]
+    ax.barh(names, values, color=colors, height=0.62, linewidth=0)
+    ax.axvline(0, color=RULE, linewidth=0.8)
+    set_panel(ax, ylabel=None)
+    ax.set_xlabel("%", fontsize=8, color=MUTED)
+
+
+def draw_flag_chips(ax, rows):
+    hide_axes(ax)
+    if not rows:
+        ax.text(0.5, 0.5, "无红旗规则", ha="center", va="center", color=MUTED, fontsize=10, transform=ax.transAxes)
+        return
+    state_text = {STATE_ON: "触发", STATE_OFF: "未触发", STATE_NA: "缺科目"}
+    n = len(rows)
+    cols = 3
+    rows_n = int(np.ceil(n / cols))
+    for i, item in enumerate(rows):
+        r, c = divmod(i, cols)
+        x = c / cols + 0.01
+        y = 1 - (r + 1) / rows_n + 0.06 / rows_n
+        w = 1 / cols - 0.03
+        h = 1 / rows_n - 0.12 / rows_n
+        if item["state"] == STATE_ON:
+            face, tc = FLAG, "#FFFFFF"
+        elif item["state"] == STATE_OFF:
+            face, tc = SURFACE, INK
+        else:
+            face, tc = NA, MUTED
+        from matplotlib.patches import FancyBboxPatch
+
+        ax.add_patch(
+            FancyBboxPatch(
+                (x, y),
+                w,
+                h,
+                boxstyle="round,pad=0.008,rounding_size=0.02",
+                facecolor=face,
+                edgecolor="none",
+                transform=ax.transAxes,
+                clip_on=False,
+            )
+        )
+        ax.text(x + 0.018, y + h * 0.58, item["label"], transform=ax.transAxes, fontsize=9, color=tc, ha="left", va="center")
+        ax.text(x + 0.018, y + h * 0.28, state_text[item["state"]], transform=ax.transAxes, fontsize=7.5, color=tc, ha="left", va="center", alpha=0.9)
+
+
+def draw_kpi_strip(ax, items):
+    hide_axes(ax)
+    if not items:
+        return
+    from matplotlib.patches import FancyBboxPatch
+
+    n = len(items)
+    for i, item in enumerate(items):
+        x0 = i / n + 0.006
+        w = 1 / n - 0.012
+        ax.add_patch(
+            FancyBboxPatch(
+                (x0, 0.06),
+                w,
+                0.88,
+                boxstyle="round,pad=0.01,rounding_size=0.03",
+                facecolor=SURFACE,
+                edgecolor="none",
+                transform=ax.transAxes,
+                clip_on=False,
+            )
+        )
+        ax.text(x0 + w / 2, 0.78, item["label"], ha="center", va="center", fontsize=8, color=MUTED, transform=ax.transAxes)
+        number_color = MUTED if item["display"] == "缺" else INK
+        ax.text(x0 + w / 2, 0.46, item["display"], ha="center", va="center", fontsize=13, color=number_color, fontweight="bold", transform=ax.transAxes)
+        yoy = item.get("yoy")
+        yoy_text = _short_yoy(yoy) if item.get("yoy_display") else ""
+        if yoy_text:
+            yoy_color = DOWN if _num(yoy) < 0 else UP
+            ax.text(x0 + w / 2, 0.2, yoy_text, ha="center", va="center", fontsize=8, color=yoy_color, transform=ax.transAxes)
+
+
+def plot_waterfall(steps, title, path):
+    if not steps:
+        return None
+    _, plt = use_mpl()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    draw_waterfall(ax, steps)
+    set_panel(ax, title=title, kicker="1  怎么赚钱")
+    return save_fig(fig, path)
 
 
 def plot_cash_three_way(items, title, path):
     if not items:
         return None
-    _, plt = _use_mpl()
-    scale, unit = _amount_scale([it["value"] for it in items])
+    _, plt = use_mpl()
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    labels = [it["label"] for it in items]
-    values = [it["value"] / scale for it in items]
-    colors = [COLOR_MAIN if v >= 0 else COLOR_WORSE for v in values]
-    ax.bar(labels, values, color=colors, edgecolor="white", width=0.55)
-    ax.axhline(0, color="#999999", linewidth=0.8)
-    ax.set_ylabel(unit)
-    ax.set_title(title, fontsize=11, fontweight="bold")
-    fig.tight_layout()
-    return _save(fig, plt, path)
+    draw_cash_three_way(ax, items)
+    set_panel(ax, title=title, kicker="2  利润真不真")
+    return save_fig(fig, path)
 
 
 def plot_dupont(items, title, path):
     if not items:
         return None
-    _, plt = _use_mpl()
-    fig, ax = plt.subplots(figsize=(8, 4.8))
-    x = np.arange(len(items))
-    width = 0.36
-    firm_vals = []
-    ind_vals = []
-    tick_labels = []
-    for item in items:
-        firm = item["firm"]
-        ind = item["industry"]
-        if item["as_pct"]:
-            firm = firm * 100 if np.isfinite(firm) else np.nan
-            ind = ind * 100 if np.isfinite(ind) else np.nan
-            tick_labels.append(item["label"] + " (%)")
-        else:
-            tick_labels.append(item["label"])
-        firm_vals.append(firm)
-        ind_vals.append(ind)
-    ax.bar(x - width / 2, firm_vals, width, color=COLOR_MAIN, label="本公司")
-    ax.bar(x + width / 2, ind_vals, width, color=COLOR_PEER, label="行业中位")
-    ax.set_xticks(x, tick_labels)
-    ax.axhline(0, color="#999999", linewidth=0.8)
-    ax.set_title(title, fontsize=11, fontweight="bold")
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    return _save(fig, plt, path)
+    _, plt = use_mpl()
+    fig, ax = plt.subplots(figsize=(8.6, 4.6))
+    draw_dupont(ax, items)
+    ax.set_title(title, loc="left", fontsize=10, color=INK, pad=8)
+    return save_fig(fig, path)
 
 
 def plot_peer_bars(frame, title, path):
     if frame is None or frame.empty:
         return None
-    _, plt = _use_mpl()
+    _, plt = use_mpl()
     fig, ax = plt.subplots(figsize=(8, 5))
-    names = []
-    for _, row in frame.iterrows():
-        label = f"{row['stock_code']} {row['company_name']}".strip()
-        names.append(label)
-    values = frame["value"].to_numpy(dtype=float) * 100.0
-    colors = [COLOR_MAIN if bool(flag) else COLOR_PEER for flag in frame["is_self"]]
-    ax.barh(names, values, color=colors, edgecolor="white")
-    ax.axvline(0, color="#999999", linewidth=0.8)
-    ax.set_xlabel("%")
-    ax.set_title(title, fontsize=11, fontweight="bold")
-    fig.tight_layout()
-    return _save(fig, plt, path)
+    draw_peer_bars(ax, frame)
+    set_panel(ax, title=title, kicker="1  怎么赚钱")
+    return save_fig(fig, path)
 
 
 def plot_flag_table(rows, title, path):
     if not rows:
         return None
-    _, plt = _use_mpl()
-    fig, ax = plt.subplots(figsize=(9, 2.8 + 0.28 * len(rows)))
-    ax.axis("off")
-    cell_text = []
-    cell_colors = []
-    state_text = {STATE_ON: "触发", STATE_OFF: "未触发", STATE_NA: "缺科目"}
-    state_color = {STATE_ON: "#f4c7c3", STATE_OFF: "#cfe2f3", STATE_NA: COLOR_NA}
-    for item in rows:
-        cell_text.append([item["label"], state_text[item["state"]], item["rule"]])
-        fill = state_color[item["state"]]
-        cell_colors.append([fill, fill, "#ffffff"])
-    table = ax.table(
-        cellText=cell_text,
-        colLabels=["红旗", "状态", "规则"],
-        cellColours=cell_colors,
-        loc="center",
-        cellLoc="left",
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 1.4)
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=12)
-    fig.tight_layout()
-    return _save(fig, plt, path)
+    _, plt = use_mpl()
+    fig, ax = plt.subplots(figsize=(9, 2.4 + 0.38 * ((len(rows) + 2) // 3)))
+    draw_flag_chips(ax, rows)
+    ax.set_title(title, loc="left", fontsize=10, color=INK, pad=8)
+    return save_fig(fig, path)
 
 
 def plot_flag_grid(matrix, names, labels, title, path):
     if matrix is None or matrix.size == 0:
         return None
-    _, plt = _use_mpl()
+    _, plt = use_mpl()
     from matplotlib.colors import ListedColormap
 
-    fig_h = max(2.6, 0.42 * len(names) + 1.6)
-    fig, ax = plt.subplots(figsize=(8, fig_h))
-    cmap = ListedColormap([COLOR_MAIN, COLOR_WORSE])
+    fig_h = max(2.8, 0.42 * len(names) + 1.6)
+    fig, ax = plt.subplots(figsize=(8.4, fig_h))
+    cmap = ListedColormap([FIRM, FLAG])
     if hasattr(cmap, "with_extremes"):
-        cmap = cmap.with_extremes(bad=COLOR_NA)
+        cmap = cmap.with_extremes(bad=NA)
     else:
-        cmap.set_bad(COLOR_NA)
+        cmap.set_bad(NA)
     ax.imshow(matrix, cmap=cmap, vmin=0, vmax=1, aspect="auto")
-    ax.set_xticks(range(len(labels)), labels, rotation=20, ha="right")
+    ax.set_xticks(range(len(labels)), labels, rotation=18, ha="right")
     ax.set_yticks(range(len(names)), names)
-    ax.set_title(title, fontsize=11, fontweight="bold")
-    fig.tight_layout()
-    return _save(fig, plt, path)
+    restyle(ax)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+    ax.set_title(title, loc="left", fontsize=10, color=INK, pad=8)
+    return save_fig(fig, path)
 
 
 def plot_kpi_cards(items, title, path):
     if not items:
         return None
-    _, plt = _use_mpl()
-    fig, axes = plt.subplots(2, 3, figsize=(10, 4.4))
-    for ax, item in zip(axes.ravel(), items):
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_color("#dddddd")
-        ax.set_title(item["label"], fontsize=10, color="#333333")
-        color = COLOR_MAIN if item["display"] != "缺" else COLOR_PEER
-        ax.text(0.5, 0.58, item["display"], ha="center", va="center", fontsize=13, fontweight="bold", color=color, transform=ax.transAxes)
-        if item["yoy_display"]:
-            ax.text(0.5, 0.22, item["yoy_display"], ha="center", va="center", fontsize=8, color=COLOR_PEER, transform=ax.transAxes)
-    fig.suptitle(title, fontsize=11, fontweight="bold")
-    fig.tight_layout()
-    return _save(fig, plt, path)
+    _, plt = use_mpl()
+    fig, ax = plt.subplots(figsize=(11, 2.4))
+    draw_kpi_strip(ax, items)
+    ax.set_title(title, loc="left", fontsize=10, color=INK, pad=10)
+    return save_fig(fig, path)
 
 
 def _safe_plot(fn, *args, **kwargs):
@@ -690,55 +839,176 @@ def _safe_plot(fn, *args, **kwargs):
         return None
 
 
-def plot_firm_set(row, labeled, medians, out_dir, flag_labels, prefix=None):
-    """Write the single-firm chart set. Missing matplotlib or missing data skips a file."""
+def _firm_header_bits(row, flag_rows):
+    code = str(_get(row, "stock_code", "") or "")
+    name = str(_get(row, "company_name", "") or "")
+    year = str(_get(row, "year", "") or "")
+    industry = str(_get(row, "industry", "") or "")
+    sector = str(_get(row, "sector_label", "") or "")
+    if sector in ("", industry, "制造业", "软件和信息技术"):
+        sector = ""
+    n_flags = _num(_get(row, "n_red_flags"))
+    triggered = [item["label"] for item in (flag_rows or []) if item["state"] == STATE_ON]
+    if np.isfinite(n_flags):
+        flag_bit = f"红旗 {int(n_flags)} 项"
+    else:
+        flag_bit = "红旗未评价"
+    bits = [b for b in (year, industry, sector, flag_bit) if b]
+    return f"{code}  {name}".strip(), "  |  ".join(bits), triggered
+
+
+def _strip_firm_prefix(title, row):
+    prefix = firm_label(row) + "："
+    if title.startswith(prefix):
+        return title[len(prefix):]
+    return title
+
+
+def plot_firm_board(row, labeled, medians, flag_labels, path):
+    """One-page tearsheet: KPI strip + four-question panels."""
+    _, plt = use_mpl()
+    from matplotlib.gridspec import GridSpec
+    from matplotlib.lines import Line2D
+
+    kpis = kpi_items(row)
+    steps = waterfall_steps(row)
+    cash = cash_flow_items(row)
+    factors = dupont_compare(row, medians)
+    wc_items = wc_compare_items(row, medians)
+    flags = flag_table_rows(row, flag_labels)
+    headline, subline, triggered = _firm_header_bits(row, flags)
+
+    fig = plt.figure(figsize=(15.4, 10.6))
+    fig.patch.set_facecolor(BG)
+    gs = GridSpec(
+        4,
+        12,
+        figure=fig,
+        height_ratios=[1.05, 2.55, 2.2, 1.2],
+        hspace=0.55,
+        wspace=0.55,
+        left=0.055,
+        right=0.97,
+        top=0.88,
+        bottom=0.05,
+    )
+    fig.text(0.055, 0.955, headline, fontsize=18, color=INK, fontweight="bold", ha="left")
+    fig.text(0.055, 0.925, subline, fontsize=10, color=MUTED, ha="left")
+    if triggered:
+        fig.text(0.97, 0.955, "、".join(triggered), fontsize=9, color=FLAG, ha="right")
+    fig.add_artist(Line2D([0.055, 0.97], [0.912, 0.912], transform=fig.transFigure, color=RULE, lw=0.8))
+
+    ax_kpi = fig.add_subplot(gs[0, :])
+    draw_kpi_strip(ax_kpi, kpis)
+
+    ax_wf = fig.add_subplot(gs[1, 0:8])
+    draw_waterfall(ax_wf, steps)
+    if steps:
+        set_panel(ax_wf, title=_strip_firm_prefix(waterfall_title(row, steps), row), kicker="1  怎么赚钱")
+
+    ax_cash = fig.add_subplot(gs[1, 8:12])
+    draw_cash_three_way(ax_cash, cash)
+    if cash:
+        set_panel(ax_cash, title=_strip_firm_prefix(cash_flow_title(row, cash), row), kicker="2  利润真不真")
+
+    ax_dupont = fig.add_subplot(gs[2, 0:6])
+    draw_dupont(ax_dupont, factors)
+    if factors:
+        ax_dupont.set_title(_strip_firm_prefix(dupont_title(row, factors), row), loc="left", fontsize=10, color=INK, pad=8)
+        ax_dupont.text(0.0, 1.16, "1  怎么赚钱", transform=ax_dupont.transAxes, fontsize=7.5, color=MUTED)
+
+    ax_wc = fig.add_subplot(gs[2, 6:12])
+    draw_dupont(ax_wc, wc_items, empty_message="营运天数缺科目", kicker="4  营运与现金")
+    if wc_items:
+        ax_wc.set_title(_strip_firm_prefix(wc_compare_title(row, wc_items), row), loc="left", fontsize=10, color=INK, pad=8)
+        ax_wc.text(0.0, 1.16, "4  营运与现金", transform=ax_wc.transAxes, fontsize=7.5, color=MUTED)
+
+    ax_flags = fig.add_subplot(gs[3, :])
+    draw_flag_chips(ax_flags, flags)
+    ax_flags.text(0.0, 1.18, "3  会不会被困住", transform=ax_flags.transAxes, fontsize=7.5, color=MUTED)
+    ax_flags.set_title(_strip_firm_prefix(flag_title(flags, row), row), loc="left", fontsize=10, color=INK, pad=8)
+    return save_fig(fig, path, dpi=170)
+
+
+def _clear_part_files(out_dir, prefix):
+    for kind in PART_KINDS:
+        path = os.path.join(out_dir, f"{prefix}_{kind}.png")
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def clean_part_charts(cards_dir):
+    """Remove the old six-file firm set. The deliverable is *_card.png."""
+    if not os.path.isdir(cards_dir):
+        return 0
+    n = 0
+    suffixes = tuple(f"_{kind}.png" for kind in PART_KINDS)
+    for name in os.listdir(cards_dir):
+        lower = name.lower()
+        if not lower.endswith(suffixes):
+            continue
+        os.remove(os.path.join(cards_dir, name))
+        n += 1
+    return n
+
+
+def plot_firm_set(row, labeled, medians, out_dir, flag_labels, prefix=None, write_parts=False):
+    """Write the firm tearsheet. Optional per-question pngs via write_parts."""
     os.makedirs(out_dir, exist_ok=True)
     code = str(_get(row, "stock_code", "unknown") or "unknown")
     name = str(_get(row, "company_name", "") or "").replace("/", "_").replace("\\", "_")
     year = str(_get(row, "year", "") or "")
     prefix = prefix or f"{code}_{name}_{year}"
     paths = {}
-
-    kpis = kpi_items(row)
-    path = os.path.join(out_dir, f"{prefix}_kpi.png")
-    written = _safe_plot(plot_kpi_cards, kpis, kpi_title(row), path)
+    card_path = os.path.join(out_dir, f"{prefix}_card.png")
+    written = _safe_plot(plot_firm_board, row, labeled, medians, flag_labels, card_path)
     if written:
-        paths["kpi"] = written
+        paths["card"] = written
+    if write_parts:
+        kpis = kpi_items(row)
+        path = os.path.join(out_dir, f"{prefix}_kpi.png")
+        part = _safe_plot(plot_kpi_cards, kpis, kpi_title(row), path)
+        if part:
+            paths["kpi"] = part
 
-    steps = waterfall_steps(row)
-    path = os.path.join(out_dir, f"{prefix}_waterfall.png")
-    written = _safe_plot(plot_waterfall, steps, waterfall_title(row, steps), path)
-    if written:
-        paths["waterfall"] = written
+        steps = waterfall_steps(row)
+        path = os.path.join(out_dir, f"{prefix}_waterfall.png")
+        part = _safe_plot(plot_waterfall, steps, waterfall_title(row, steps), path)
+        if part:
+            paths["waterfall"] = part
 
-    cash = cash_flow_items(row)
-    path = os.path.join(out_dir, f"{prefix}_cash.png")
-    written = _safe_plot(plot_cash_three_way, cash, cash_flow_title(row, cash), path)
-    if written:
-        paths["cash"] = written
+        cash = cash_flow_items(row)
+        path = os.path.join(out_dir, f"{prefix}_cash.png")
+        part = _safe_plot(plot_cash_three_way, cash, cash_flow_title(row, cash), path)
+        if part:
+            paths["cash"] = part
 
-    factors = dupont_compare(row, medians)
-    path = os.path.join(out_dir, f"{prefix}_dupont.png")
-    written = _safe_plot(plot_dupont, factors, dupont_title(row, factors), path)
-    if written:
-        paths["dupont"] = written
+        factors = dupont_compare(row, medians)
+        path = os.path.join(out_dir, f"{prefix}_dupont.png")
+        part = _safe_plot(plot_dupont, factors, dupont_title(row, factors), path)
+        if part:
+            paths["dupont"] = part
 
-    peers = peer_bar_frame(labeled, row)
-    path = os.path.join(out_dir, f"{prefix}_peers.png")
-    written = _safe_plot(plot_peer_bars, peers, peer_title(peers, row, medians), path)
-    if written:
-        paths["peers"] = written
+        peers = peer_bar_frame(labeled, row)
+        path = os.path.join(out_dir, f"{prefix}_peers.png")
+        part = _safe_plot(plot_peer_bars, peers, peer_title(peers, row, medians), path)
+        if part:
+            paths["peers"] = part
 
-    flags = flag_table_rows(row, flag_labels)
-    path = os.path.join(out_dir, f"{prefix}_flags.png")
-    written = _safe_plot(plot_flag_table, flags, flag_title(flags, row), path)
-    if written:
-        paths["flags"] = written
+        flags = flag_table_rows(row, flag_labels)
+        path = os.path.join(out_dir, f"{prefix}_flags.png")
+        part = _safe_plot(plot_flag_table, flags, flag_title(flags, row), path)
+        if part:
+            paths["flags"] = part
+    else:
+        _clear_part_files(out_dir, prefix)
     return paths
 
 
-def write_firm_charts(labeled, medians, cards_dir, flag_labels, codes=None):
+def write_firm_charts(labeled, medians, cards_dir, flag_labels, codes=None, write_parts=False):
     os.makedirs(cards_dir, exist_ok=True)
+    if not write_parts:
+        clean_part_charts(cards_dir)
     work = labeled.copy()
     work["stock_code"] = work["stock_code"].astype(str)
     if codes is not None:
@@ -746,7 +1016,7 @@ def write_firm_charts(labeled, medians, cards_dir, flag_labels, codes=None):
         work = work[work["stock_code"].isin(wanted)]
     n_written = 0
     for _, row in work.iterrows():
-        paths = plot_firm_set(row, labeled, medians, cards_dir, flag_labels)
+        paths = plot_firm_set(row, labeled, medians, cards_dir, flag_labels, write_parts=write_parts)
         if paths:
             n_written += 1
     return n_written
@@ -763,4 +1033,4 @@ def plot_example_flag_grid(examples, path, flag_labels):
         rows.append(series)
     frame = pd.DataFrame(rows)
     matrix, names, labels = flag_matrix(frame, flag_labels)
-    return plot_flag_grid(matrix, names, labels, "例卡红旗色块（红=触发，蓝=未触发，灰=缺科目）", path)
+    return plot_flag_grid(matrix, names, labels, "例卡红旗色块（锈红=触发，墨蓝=未触发，浅灰=缺科目）", path)

@@ -118,7 +118,7 @@ pdfplumber（文本层）→ PyMuPDF（备用文本）→ RapidOCR（页面截�
 - 营运资金按问题完整个案：主口径软件 DSO 179 天（n=24）、制造 105 天（n=80）；去掉 IQR 离群后变成 97 对 102，长账期是右尾。制造 DIO 只略高（113 vs 100）。软件 23% 缺存货行，不是存货为 0。
 - 盈余质量：应计/收入中位数 −4.5%（n=109）。利润<0 且 OCF>0 有 21 家，利润>0 且 OCF<0 只有 12 家。IQR 后制造 / 软件应计中位数不动。
 - 行业杜邦（有效 ROE 109 家）：制造 4.4%，软件 0.5%，差在净利率。IQR 后仍是制造更高（5.9% vs 2.6%）。冻掉负权益后 ROE 与净利率 Spearman 0.90。
-- 公司报告卡（怎么赚钱 / 利润真不真 / 会不会被困住 / 当年营运与现金）。首块补抽：货币资金 173/195、销售商品收现 158/195、营业利润 126/195。最常见红旗是利息保障偏弱（54/107）和制造收现率偏低（21/90）；存贷双高、其他应收、商誉很少触发。截面图：利润瀑布、现金流三分类、杜邦三因子、同行条形、红旗色块（一张图一个问题，缺科目不画 0）。
+- 公司报告卡（怎么赚钱 / 利润真不真 / 会不会被困住 / 当年营运与现金）。首块补抽：货币资金 173/195、销售商品收现 158/195、营业利润 126/195。最常见红旗是利息保障偏弱（54/107）和制造收现率偏低（21/90）；存贷双高、其他应收、商誉很少触发。每家一张一页纸（`*_card.png`）：KPI、利润瀑布、现金流三分类、杜邦对照、DSO/DIO/CCC、红旗。行业对应 `industry_board.png`。`chart_catalog.py` 按四问把图拷到 `output/analysis/charts/`；CSRC 门类把「其他」拆成待分类 / 未归档 / 小品类，三组中位数不变。
 - 附录：12 例现金缺口分类几乎没有信号（logit ROC 0.53）；旧「OCF>0 且现金净增加>0」仍是对照。
 
 ```bash
@@ -128,6 +128,7 @@ python industry_portrait.py
 python dupont_pca.py
 python cash_gap_model.py          # 需要 scikit-learn；shap 可选
 python report_card.py             # 公司四段报告卡 + 截面图
+python chart_catalog.py           # 按四问归类现有图（默认：行业图 + 4 家例卡）
 python financial_analysis.py --csv-dir output/analysis/_csv_255
 python ml_financial_health.py     # 对照：OCF>0 且现金净增加>0
 python ml_evaluation.py
@@ -167,6 +168,7 @@ neeq-financial-data-pipeline/
 ├── cash_gap_model.md
 ├── report_card.py
 ├── report_charts.py
+├── chart_catalog.py
 ├── company_report_cards.md
 ├── ANALYSIS_REPORT.md
 ├── ANALYSIS_README.md
