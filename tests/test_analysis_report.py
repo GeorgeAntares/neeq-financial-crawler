@@ -14,6 +14,7 @@ class AnalysisReportTest(unittest.TestCase):
             "营运资金",
             "盈余质量",
             "行业杜邦",
+            "报告卡",
             "附录",
             "局限",
         ):

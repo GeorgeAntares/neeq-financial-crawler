@@ -33,6 +33,14 @@ WINSOR_LIMITS = (0.01, 0.99)
 DAYS_PER_YEAR = 365.0
 DAYS_ANOMALY = 730.0
 BS_REL_TOL = 0.01
+CASH_HIGH = 0.20
+ST_DEBT_HIGH = 0.20
+OTHER_REC_HIGH = 0.10
+GOODWILL_HIGH = 0.10
+CORE_RATIO_LOW = 0.90
+CORE_RATIO_HIGH = 1.10
+CASH_CONVERSION_LOW = 0.80
+INTEREST_COVER_WEAK = 2.0
 
 ID_COLS = ["stock_code", "company_name", "year"]
 
@@ -55,6 +63,24 @@ AMOUNT_COLS = [
     "accounts_payable",
     "ocf",
     "ocf_prior",
+    "cash",
+    "st_borrowings",
+    "current_portion_ltd",
+    "other_receivables",
+    "prepayments",
+    "goodwill",
+    "contract_liabilities",
+    "advances_from_customers",
+    "operating_profit",
+    "selling_expense",
+    "admin_expense",
+    "rd_expense",
+    "finance_expense",
+    "interest_expense",
+    "non_operating_income",
+    "sales_cash",
+    "st_interest_bearing",
+    "customer_advances",
 ]
 
 RATIO_COLS = [
@@ -77,6 +103,22 @@ RATIO_COLS = [
     "revenue_yoy",
     "net_profit_yoy",
     "ocf_yoy",
+    "roa",
+    "operating_margin",
+    "core_profit_ratio",
+    "sga_to_revenue",
+    "rd_to_revenue",
+    "finance_to_revenue",
+    "cash_to_assets",
+    "st_debt_to_assets",
+    "cash_ratio",
+    "quick_ratio",
+    "other_receivables_to_assets",
+    "goodwill_to_assets",
+    "prepayments_to_assets",
+    "customer_advances_to_revenue",
+    "cash_conversion",
+    "interest_coverage",
 ]
 
 FLAG_COLS = [
@@ -92,6 +134,14 @@ FLAG_COLS = [
     "dso_anomalous",
     "dio_anomalous",
     "dpo_anomalous",
+    "goodwill_status",
+    "flag_cash_debt_high",
+    "flag_other_receivables",
+    "flag_goodwill",
+    "flag_core_profit_off",
+    "flag_cash_conversion_low",
+    "flag_interest_cover_weak",
+    "n_red_flags",
 ]
 
 
@@ -272,6 +322,149 @@ def score_ocf(item):
     if text.startswith("经营活动产生的现金流量净"):
         return 1
     return 0
+
+
+def _exact_item(item, name):
+    return 1 if str(item).strip() == name else 0
+
+
+def score_cash(item):
+    return _exact_item(item, "货币资金")
+
+
+def score_st_borrowings(item):
+    return _exact_item(item, "短期借款")
+
+
+def score_current_portion_ltd(item):
+    text = str(item).strip()
+    if text.startswith("其中"):
+        return 0
+    return 1 if text == "一年内到期的非流动负债" else 0
+
+
+def score_other_receivables(item):
+    text = str(item).strip()
+    if text.startswith("其中"):
+        return 0
+    return 1 if text == "其他应收款" else 0
+
+
+def score_prepayments(item):
+    return _exact_item(item, "预付款项")
+
+
+def score_goodwill(item):
+    return _exact_item(item, "商誉")
+
+
+def score_contract_liabilities(item):
+    return _exact_item(item, "合同负债")
+
+
+def score_advances_from_customers(item):
+    text = str(item).strip()
+    if text in ("预收款项", "预收账款"):
+        return 1
+    return 0
+
+
+def score_operating_profit(item):
+    text = str(item).strip()
+    if "营业利润" not in text or "营业利润率" in text:
+        return 0
+    if text.startswith("其中"):
+        return 0
+    if text.startswith("三"):
+        return 2
+    return 1
+
+
+def score_selling_expense(item):
+    text = str(item).strip()
+    if text.startswith("其中"):
+        return 0
+    if text == "销售费用" or text.startswith("销售费用"):
+        return 1
+    return 0
+
+
+def score_admin_expense(item):
+    text = str(item).strip()
+    if text.startswith("其中"):
+        return 0
+    if text == "管理费用" or text.startswith("管理费用"):
+        return 1
+    return 0
+
+
+def score_rd_expense(item):
+    text = str(item).strip()
+    if text.startswith("其中"):
+        return 0
+    if text == "研发费用" or text.startswith("研发费用"):
+        return 1
+    return 0
+
+
+def score_finance_expense(item):
+    text = str(item).strip()
+    if text.startswith("其中"):
+        return 0
+    if text == "财务费用" or text.startswith("财务费用"):
+        return 1
+    return 0
+
+
+def score_interest_expense(item):
+    text = str(item).strip()
+    if "利息收入" in text:
+        return 0
+    if text.startswith("其中：利息费用") or text.startswith("其中:利息费用"):
+        return 2
+    if text == "利息费用" or text.startswith("利息费用"):
+        return 1
+    return 0
+
+
+def score_non_operating_income(item):
+    text = str(item).strip()
+    if "营业外支出" in text or text.startswith("其中"):
+        return 0
+    if "营业外收入" in text:
+        return 1
+    return 0
+
+
+def score_sales_cash(item):
+    text = str(item).strip()
+    if text.startswith("其中"):
+        return 0
+    if "销售商品" in text and "收到的现金" in text:
+        return 1
+    return 0
+
+
+def sum_if_any(*columns):
+    """Sum addends; NaN when every addend is missing. Missing addends count as 0 once one is present."""
+    index = None
+    for col in columns:
+        if col is not None and hasattr(col, "index"):
+            index = col.index
+            break
+    any_present = None
+    acc = None
+    for col in columns:
+        values = pd.to_numeric(col, errors="coerce")
+        if index is None:
+            index = getattr(values, "index", None)
+        present = values.notna()
+        any_present = present if any_present is None else any_present | present
+        filled = values.fillna(0)
+        acc = filled if acc is None else acc + filled
+    if acc is None:
+        return pd.Series(np.nan, index=index)
+    return acc.where(any_present)
 
 
 def pick_amount(long_df, score_fn, value_col="current"):
@@ -477,9 +670,105 @@ def add_ratios_and_flags(wide):
     frame["net_profit_yoy"] = yoy(frame["net_profit"], frame.get("net_profit_prior"))
     frame["ocf_yoy"] = yoy(frame["ocf"], frame.get("ocf_prior"))
 
+    avg_assets = pd.to_numeric(frame["avg_assets"], errors="coerce")
+    frame["roa"] = safe_div(frame["net_profit"], frame["avg_assets"])
+    frame.loc[avg_assets.isna() | (avg_assets <= 0), "roa"] = np.nan
+
+    op = _numeric(frame.get("operating_profit"), frame.index)
+    noi = _numeric(frame.get("non_operating_income"), frame.index)
+    frame["operating_margin"] = safe_div(op, frame["revenue"])
+    frame["core_profit_ratio"] = safe_div(op, op + noi.fillna(0))
+
+    selling = _numeric(frame.get("selling_expense"), frame.index)
+    admin = _numeric(frame.get("admin_expense"), frame.index)
+    rd = _numeric(frame.get("rd_expense"), frame.index)
+    finance = _numeric(frame.get("finance_expense"), frame.index)
+    frame["sga_to_revenue"] = safe_div(sum_if_any(selling, admin), frame["revenue"])
+    frame.loc[selling.isna() | admin.isna(), "sga_to_revenue"] = np.nan
+    frame["rd_to_revenue"] = safe_div(rd, frame["revenue"])
+    frame["finance_to_revenue"] = safe_div(finance, frame["revenue"])
+
+    cash = _numeric(frame.get("cash"), frame.index)
+    st_b = _numeric(frame.get("st_borrowings"), frame.index)
+    cpltd = _numeric(frame.get("current_portion_ltd"), frame.index)
+    frame["st_interest_bearing"] = sum_if_any(st_b, cpltd)
+    contract_liab = _numeric(frame.get("contract_liabilities"), frame.index)
+    advances = _numeric(frame.get("advances_from_customers"), frame.index)
+    frame["customer_advances"] = sum_if_any(contract_liab, advances)
+
+    frame["cash_to_assets"] = safe_div(cash, assets)
+    frame["st_debt_to_assets"] = safe_div(frame["st_interest_bearing"], assets)
+    frame["cash_ratio"] = safe_div(cash, frame.get("current_liabilities"))
+    current_assets = _numeric(frame.get("current_assets"), frame.index)
+    current_liab = _numeric(frame.get("current_liabilities"), frame.index)
+    frame["quick_ratio"] = safe_div(current_assets - inventory, current_liab)
+    frame.loc[inventory.isna(), "quick_ratio"] = np.nan
+
+    other_rec = _numeric(frame.get("other_receivables"), frame.index)
+    goodwill = _numeric(frame.get("goodwill"), frame.index)
+    prepay = _numeric(frame.get("prepayments"), frame.index)
+    frame["other_receivables_to_assets"] = safe_div(other_rec, assets)
+    frame["goodwill_to_assets"] = safe_div(goodwill, assets)
+    frame["prepayments_to_assets"] = safe_div(prepay, assets)
+    frame["customer_advances_to_revenue"] = safe_div(frame["customer_advances"], frame["revenue"])
+    sales_cash = _numeric(frame.get("sales_cash"), frame.index)
+    frame["cash_conversion"] = safe_div(sales_cash, frame["revenue"])
+    interest = _numeric(frame.get("interest_expense"), frame.index)
+    frame["interest_coverage"] = safe_div(op, interest)
+    frame.loc[interest.isna() | (interest <= 0), "interest_coverage"] = np.nan
+
+    gw_status = pd.Series("missing", index=frame.index, dtype="object")
+    gw_status = gw_status.mask(goodwill == 0, "zero")
+    gw_status = gw_status.mask(goodwill.notna() & (goodwill != 0), "positive")
+    frame["goodwill_status"] = gw_status
+
+    def _flag(can, condition):
+        out = pd.Series(pd.NA, index=frame.index, dtype="object")
+        if can.any():
+            out.loc[can] = condition.loc[can].astype(bool).to_numpy()
+        return out
+
+    cash_share = pd.to_numeric(frame["cash_to_assets"], errors="coerce")
+    debt_share = pd.to_numeric(frame["st_debt_to_assets"], errors="coerce")
+    frame["flag_cash_debt_high"] = _flag(
+        cash_share.notna() & debt_share.notna(),
+        (cash_share >= CASH_HIGH) & (debt_share >= ST_DEBT_HIGH),
+    )
+    oth_share = pd.to_numeric(frame["other_receivables_to_assets"], errors="coerce")
+    frame["flag_other_receivables"] = _flag(oth_share.notna(), oth_share >= OTHER_REC_HIGH)
+    gw_share = pd.to_numeric(frame["goodwill_to_assets"], errors="coerce")
+    frame["flag_goodwill"] = _flag(gw_share.notna(), gw_share >= GOODWILL_HIGH)
+    core = pd.to_numeric(frame["core_profit_ratio"], errors="coerce")
+    frame["flag_core_profit_off"] = _flag(
+        core.notna(), (core < CORE_RATIO_LOW) | (core > CORE_RATIO_HIGH)
+    )
+    conv = pd.to_numeric(frame["cash_conversion"], errors="coerce")
+    frame["flag_cash_conversion_low"] = _flag(conv.notna(), conv < CASH_CONVERSION_LOW)
+    cover = pd.to_numeric(frame["interest_coverage"], errors="coerce")
+    frame["flag_interest_cover_weak"] = _flag(
+        cover.notna(), (cover < INTEREST_COVER_WEAK)
+    )
+
+    flag_names = [
+        "flag_cash_debt_high",
+        "flag_other_receivables",
+        "flag_goodwill",
+        "flag_core_profit_off",
+        "flag_cash_conversion_low",
+        "flag_interest_cover_weak",
+    ]
+    flag_sum = pd.Series(0, index=frame.index, dtype="int64")
+    for name in flag_names:
+        flag_sum = flag_sum + (frame[name] == True).astype("int64")
+    frame["n_red_flags"] = flag_sum
+
+    winsor = {}
     for col in RATIO_COLS + ["ocf_minus_np"]:
-        frame[f"{col}_w"] = winsorize_series(frame[col])
-    return frame
+        if col in frame.columns:
+            winsor[f"{col}_w"] = winsorize_series(frame[col])
+    if winsor:
+        frame = pd.concat([frame, pd.DataFrame(winsor, index=frame.index)], axis=1)
+    return frame.copy()
 
 
 def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
@@ -508,6 +797,22 @@ def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
 
     ocf = pick_amount(cashflow, score_ocf)
     ocf_prior = pick_amount(cashflow, score_ocf, value_col="prior")
+    cash = pick_amount(balance, score_cash)
+    st_borrowings = pick_amount(balance, score_st_borrowings)
+    current_portion = pick_amount(balance, score_current_portion_ltd)
+    other_rec = pick_amount(balance, score_other_receivables)
+    prepayments = pick_amount(balance, score_prepayments)
+    goodwill = pick_amount(balance, score_goodwill)
+    contract_liab = pick_amount(balance, score_contract_liabilities)
+    advances = pick_amount(balance, score_advances_from_customers)
+    operating_profit = pick_amount(income, score_operating_profit)
+    selling = pick_amount(income, score_selling_expense)
+    admin = pick_amount(income, score_admin_expense)
+    rd = pick_amount(income, score_rd_expense)
+    finance = pick_amount(income, score_finance_expense)
+    interest = pick_amount(income, score_interest_expense)
+    non_op_income = pick_amount(income, score_non_operating_income)
+    sales_cash = pick_amount(cashflow, score_sales_cash)
 
     wide = revenue.rename(columns={"value": "revenue", "item": "revenue_item"})
     wide = _merge_pick(wide, revenue_prior, "revenue_prior")
@@ -527,6 +832,22 @@ def build_company_metrics(csv_dir, min_revenue=MIN_REVENUE_CNY):
     wide = _merge_pick(wide, payable, "accounts_payable")
     wide = _merge_pick(wide, ocf, "ocf")
     wide = _merge_pick(wide, ocf_prior, "ocf_prior")
+    wide = _merge_pick(wide, cash, "cash")
+    wide = _merge_pick(wide, st_borrowings, "st_borrowings")
+    wide = _merge_pick(wide, current_portion, "current_portion_ltd")
+    wide = _merge_pick(wide, other_rec, "other_receivables")
+    wide = _merge_pick(wide, prepayments, "prepayments")
+    wide = _merge_pick(wide, goodwill, "goodwill")
+    wide = _merge_pick(wide, contract_liab, "contract_liabilities")
+    wide = _merge_pick(wide, advances, "advances_from_customers")
+    wide = _merge_pick(wide, operating_profit, "operating_profit")
+    wide = _merge_pick(wide, selling, "selling_expense")
+    wide = _merge_pick(wide, admin, "admin_expense")
+    wide = _merge_pick(wide, rd, "rd_expense")
+    wide = _merge_pick(wide, finance, "finance_expense")
+    wide = _merge_pick(wide, interest, "interest_expense")
+    wide = _merge_pick(wide, non_op_income, "non_operating_income")
+    wide = _merge_pick(wide, sales_cash, "sales_cash")
     wide = _merge_counts(wide, statement_meta(income), "income_n_rows")
     wide = _merge_counts(wide, statement_meta(balance), "balance_n_rows")
     wide = _merge_counts(wide, statement_meta(cashflow), "cashflow_n_rows")
@@ -584,6 +905,16 @@ def coverage_table(metrics):
         "dio",
         "accruals_to_revenue",
         "revenue_yoy",
+        "cash",
+        "operating_profit",
+        "sales_cash",
+        "interest_expense",
+        "other_receivables",
+        "goodwill",
+        "cash_conversion",
+        "core_profit_ratio",
+        "cash_ratio",
+        "interest_coverage",
     ]
     rows = []
     for field in fields:
@@ -619,6 +950,16 @@ def quality_summary(metrics):
     add("inventory_missing", metrics["inventory_status"] == "missing")
     add("dso_anomalous", metrics["dso_anomalous"] == True)
     add("dio_anomalous", metrics["dio_anomalous"] == True)
+    for name in (
+        "flag_cash_debt_high",
+        "flag_other_receivables",
+        "flag_goodwill",
+        "flag_core_profit_off",
+        "flag_cash_conversion_low",
+        "flag_interest_cover_weak",
+    ):
+        if name in metrics.columns:
+            add(name, metrics[name] == True)
     return pd.DataFrame(rows)
 
 
